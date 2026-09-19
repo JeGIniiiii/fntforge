@@ -3,8 +3,9 @@ use eframe::egui::{
     TextureHandle, TextureOptions, Vec2,
 };
 use fntforge_core::{
-    extract_chars, extract_from_source, generate, merge_chars, parse_fnt, write_fnt, write_font_files,
-    AlignH, CharsetPreset, Fill, Project, ProjectFile, Rgba8, StrokePosition, StyleStack,
+    discover_next_to_fnt, extract_chars, extract_from_source, generate, merge_chars, parse_fnt,
+    write_fnt, write_font_files, AlignH, CharsetPreset, Fill, FntSidecars, Project, ProjectFile,
+    Rgba8, StrokePosition, StyleStack,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,9 +57,35 @@ struct App {
     glyphs: Vec<GlyphSpot>,
     line_height: f32,
     atlas_size: Vec2,
-    history: Vec<StyleStack>,
+    history: Vec<Snap>,
     missing: String,
     append_edit: String,
+    inner_glow_hex: String,
+    inner_shadow_hex: String,
+    overlay_hex: String,
+    satin_hex: String,
+    preview_scale: f32,
+    show_guides: bool,
+    picked: String,
+    wizard: Option<AddWizard>,
+    last_export_dir: Option<PathBuf>,
+    recents: Vec<PathBuf>,
+    missing_chars: Vec<char>,
+}
+
+#[derive(Clone)]
+struct Snap {
+    style: StyleStack,
+    charset: String,
+    preview: String,
+}
+
+struct AddWizard {
+    fnt_path: PathBuf,
+    imported_chars: String,
+    extra: String,
+    sidecars: FntSidecars,
+    note: String,
 }
 
 impl App {
@@ -78,9 +105,13 @@ impl App {
             stroke_hex: "2a1808".into(),
             shadow_hex: "000000a0".into(),
             glow_hex: "e6d060aa".into(),
+            inner_glow_hex: "ffffff78".into(),
+            inner_shadow_hex: "5028005a".into(),
+            overlay_hex: "b4d2d6".into(),
+            satin_hex: "ffffff40".into(),
             grad_a: "fff3a0".into(),
             grad_b: "b8841c".into(),
-            status: "打开标题 TTF。字符集可导入已有 .fnt 再追加。".into(),
+            status: "打开标题 TTF，或拖入 .fnt 走加字向导。".into(),
             atlas_tex: None,
             dirty: true,
             last_fnt_preview: String::new(),
@@ -91,6 +122,13 @@ impl App {
             history: Vec::new(),
             missing: String::new(),
             append_edit: String::new(),
+            preview_scale: 1.0,
+            show_guides: true,
+            picked: String::new(),
+            wizard: None,
+            last_export_dir: None,
+            recents: load_recents(),
+            missing_chars: Vec::new(),
         };
         app.sync_hex();
         app.rebuild(&cc.egui_ctx);
@@ -98,9 +136,23 @@ impl App {
     }
 
     fn push_history(&mut self) {
-        self.history.push(self.project.style.clone());
+        self.history.push(Snap {
+            style: self.project.style.clone(),
+            charset: self.charset_edit.clone(),
+            preview: self.preview_edit.clone(),
+        });
         if self.history.len() > 32 {
             self.history.remove(0);
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(s) = self.history.pop() {
+            self.project.style = s.style;
+            self.charset_edit = s.charset;
+            self.preview_edit = s.preview;
+            self.sync_hex();
+            self.dirty = true;
         }
     }
 
@@ -108,6 +160,10 @@ impl App {
         self.stroke_hex = self.project.style.stroke.color.to_hex(true);
         self.shadow_hex = self.project.style.drop_shadow.color.to_hex(true);
         self.glow_hex = self.project.style.outer_glow.color.to_hex(true);
+        self.inner_glow_hex = self.project.style.inner_glow.color.to_hex(true);
+        self.inner_shadow_hex = self.project.style.inner_shadow.color.to_hex(true);
+        self.overlay_hex = self.project.style.color_overlay.color.to_hex(false);
+        self.satin_hex = self.project.style.satin.color.to_hex(true);
         if let Some((_, c)) = self.project.style.gradient_overlay.stops.first() {
             self.grad_a = c.to_hex(false);
         }
@@ -141,6 +197,10 @@ impl App {
         self.project.style.stroke.color = Rgba8::from_hex(&self.stroke_hex);
         self.project.style.drop_shadow.color = Rgba8::from_hex(&self.shadow_hex);
         self.project.style.outer_glow.color = Rgba8::from_hex(&self.glow_hex);
+        self.project.style.inner_glow.color = Rgba8::from_hex(&self.inner_glow_hex);
+        self.project.style.inner_shadow.color = Rgba8::from_hex(&self.inner_shadow_hex);
+        self.project.style.color_overlay.color = Rgba8::from_hex(&self.overlay_hex);
+        self.project.style.satin.color = Rgba8::from_hex(&self.satin_hex);
         match generate(&self.project) {
             Ok(font) => {
                 if let Some(page) = font.pages.first() {
@@ -171,16 +231,25 @@ impl App {
                 self.line_height = font.line_height as f32;
                 self.last_fnt_preview = write_fnt(&font, "preview").text;
                 self.missing = fntforge_core::missing_report(&font);
-                self.status = format!(
-                    "{} 个字形 · {}×{} · {} 页 · 行高 {} · 缺字 {} · 后备 {}",
-                    font.glyphs.len(),
-                    font.scale_w,
-                    font.scale_h,
-                    font.pages.len(),
-                    font.line_height,
-                    font.missing.len(),
-                    font.fallback_used.len()
-                );
+                self.missing_chars = font.missing.clone();
+                let miss_n = font.missing.len();
+                self.status = if miss_n > 0 {
+                    format!(
+                        "缺字 {} 个：{}  · 预览里红框标出",
+                        miss_n,
+                        font.missing.iter().take(12).collect::<String>()
+                    )
+                } else {
+                    format!(
+                        "{} 个字形 · {}×{} · {} 页 · 行高 {} · 后备 {}",
+                        font.glyphs.len(),
+                        font.scale_w,
+                        font.scale_h,
+                        font.pages.len(),
+                        font.line_height,
+                        font.fallback_used.len()
+                    )
+                };
                 self.dirty = false;
             }
             Err(e) => self.status = format!("生成失败：{e}"),
@@ -194,6 +263,13 @@ impl eframe::App for App {
         ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(
             egui::viewport::SystemTheme::Dark,
         ));
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
+            self.undo();
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::E)) {
+            self.export();
+        }
+        self.take_drops(ctx);
 
         egui::TopBottomPanel::top("bar")
             .exact_height(52.0)
@@ -231,12 +307,11 @@ impl eframe::App for App {
                     if ui.add(tool_btn("导出配置")).clicked() {
                         self.export_style();
                     }
+                    if ui.add(tool_btn("加字向导")).clicked() {
+                        self.start_wizard();
+                    }
                     if ui.add(tool_btn("撤销")).clicked() {
-                        if let Some(s) = self.history.pop() {
-                            self.project.style = s;
-                            self.sync_hex();
-                            self.dirty = true;
-                        }
+                        self.undo();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let export = egui::Button::new(
@@ -260,7 +335,11 @@ impl eframe::App for App {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&self.status).size(12.0).color(C::MUTED));
+                    ui.label(RichText::new(&self.status).size(12.0).color(if self.missing_chars.is_empty() {
+                        C::MUTED
+                    } else {
+                        Color32::from_rgb(220, 90, 70)
+                    }));
                     if let Some(p) = &self.font_path {
                         ui.separator();
                         ui.label(
@@ -460,10 +539,43 @@ impl eframe::App for App {
                     }
                 }
                 effect_toggle(ui, &mut self.project.style.inner_shadow.enabled, "内阴影", &mut self.dirty);
+                if self.project.style.inner_shadow.enabled {
+                    ui.add(
+                        egui::Slider::new(&mut self.project.style.inner_shadow.distance, 0.0..=8.0)
+                            .text("距离"),
+                    );
+                    if color_row(ui, "内阴影色", &mut self.inner_shadow_hex, true) {
+                        self.dirty = true;
+                    }
+                }
                 effect_toggle(ui, &mut self.project.style.inner_glow.enabled, "内发光", &mut self.dirty);
+                if self.project.style.inner_glow.enabled {
+                    ui.add(egui::Slider::new(&mut self.project.style.inner_glow.size, 0.5..=16.0).text("大小"));
+                    if color_row(ui, "内发光色", &mut self.inner_glow_hex, true) {
+                        self.dirty = true;
+                    }
+                }
                 effect_toggle(ui, &mut self.project.style.color_overlay.enabled, "颜色叠加", &mut self.dirty);
+                if self.project.style.color_overlay.enabled
+                    && color_row(ui, "叠加色", &mut self.overlay_hex, false)
+                {
+                    self.dirty = true;
+                }
                 effect_toggle(ui, &mut self.project.style.bevel.enabled, "斜面浮雕", &mut self.dirty);
+                if self.project.style.bevel.enabled {
+                    ui.add(egui::Slider::new(&mut self.project.style.bevel.size, 0.5..=12.0).text("大小"));
+                    ui.add(egui::Slider::new(&mut self.project.style.bevel.depth, 0.2..=4.0).text("深度"));
+                    ui.add(egui::Slider::new(&mut self.project.style.bevel.soften, 0.0..=8.0).text("柔化"));
+                }
                 effect_toggle(ui, &mut self.project.style.satin.enabled, "光泽", &mut self.dirty);
+                if self.project.style.satin.enabled {
+                    ui.add(egui::Slider::new(&mut self.project.style.satin.distance, 0.0..=12.0).text("距离"));
+                    ui.add(egui::Slider::new(&mut self.project.style.satin.angle_deg, 0.0..=360.0).text("角度"));
+                    ui.add(egui::Slider::new(&mut self.project.style.satin.size, 0.5..=16.0).text("大小"));
+                    if color_row(ui, "光泽色", &mut self.satin_hex, true) {
+                        self.dirty = true;
+                    }
+                }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.add(tool_btn("应用样式")).clicked() {
@@ -488,10 +600,28 @@ impl eframe::App for App {
             .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 section_label(ui, "预览");
-                ui.add_space(12.0);
+                ui.add_space(8.0);
                 ui.selectable_value(&mut self.project.align_h, AlignH::Left, "左对齐");
                 ui.selectable_value(&mut self.project.align_h, AlignH::Center, "居中");
                 ui.selectable_value(&mut self.project.align_h, AlignH::Right, "右对齐");
+                ui.add_space(8.0);
+                ui.selectable_value(&mut self.preview_scale, 1.0, "1x");
+                ui.selectable_value(&mut self.preview_scale, 2.0, "2x");
+                ui.checkbox(&mut self.show_guides, "对齐线");
+            });
+            ui.horizontal_wrapped(|ui| {
+                for (name, text) in [
+                    ("金币", "金币 1280"),
+                    ("血量", "HP 88/100"),
+                    ("伤害", "-1234"),
+                    ("等级", "Lv.12"),
+                    ("加号", "1111HP+"),
+                ] {
+                    if ui.add(tool_btn(name)).clicked() {
+                        self.preview_edit = text.into();
+                        self.project.preview_text = text.into();
+                    }
+                }
             });
             if ui
                 .add(
@@ -504,6 +634,9 @@ impl eframe::App for App {
                 self.project.preview_text = self.preview_edit.clone();
             }
             self.paint_preview(ui);
+            if !self.picked.is_empty() {
+                ui.label(RichText::new(&self.picked).size(12.0).color(C::MUTED));
+            }
             ui.add_space(14.0);
             section_label(ui, "图集");
             if let Some(tex) = &self.atlas_tex {
@@ -526,6 +659,8 @@ impl eframe::App for App {
             });
         });
 
+        self.draw_wizard(ctx);
+
         if self.dirty {
             self.rebuild(ctx);
         }
@@ -533,10 +668,12 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn paint_preview(&self, ui: &mut egui::Ui) {
-        let Some(tex) = &self.atlas_tex else { return };
-        let lines: Vec<&str> = self.preview_edit.split('\n').collect();
-        let pad = 16.0;
+    fn paint_preview(&mut self, ui: &mut egui::Ui) {
+        let Some(tex) = self.atlas_tex.clone() else { return };
+        let scale = self.preview_scale.max(1.0);
+        let lines: Vec<String> = self.preview_edit.split('\n').map(|s| s.to_string()).collect();
+        let pad = 16.0 * scale;
+        let lh = self.line_height * scale;
         let widths: Vec<f32> = lines
             .iter()
             .map(|line| {
@@ -545,8 +682,8 @@ impl App {
                         self.glyphs
                             .iter()
                             .find(|g| g.id == ch as u32)
-                            .map(|g| g.xadvance)
-                            .unwrap_or(self.project.font_size * 0.5)
+                            .map(|g| g.xadvance * scale)
+                            .unwrap_or(self.project.font_size * 0.5 * scale)
                     })
                     .sum()
             })
@@ -557,11 +694,12 @@ impl App {
             .fold(320.0f32, f32::max)
             .max(ui.available_width())
             + pad * 2.0;
-        let h = (lines.len() as f32 * self.line_height + pad * 2.0).max(72.0);
-        let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(w.min(ui.available_width()), h), egui::Sense::hover());
-        ui.painter()
-            .rect_filled(rect, 0.0, Color32::BLACK);
+        let h = (lines.len() as f32 * lh + pad * 2.0).max(88.0);
+        let (rect, resp) = ui.allocate_exact_size(
+            Vec2::new(w.min(ui.available_width()), h),
+            egui::Sense::click(),
+        );
+        ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
         ui.painter().rect_stroke(
             rect,
             0.0,
@@ -570,6 +708,7 @@ impl App {
         );
         let tw = self.atlas_size.x.max(1.0);
         let th = self.atlas_size.y.max(1.0);
+        let mut hits: Vec<(Rect, char, &GlyphSpot)> = Vec::new();
         for (li, line) in lines.iter().enumerate() {
             let line_w = widths[li];
             let mut x = match self.project.align_h {
@@ -577,7 +716,19 @@ impl App {
                 AlignH::Right => rect.right() - pad - line_w,
                 AlignH::Center => rect.left() + (rect.width() - line_w) * 0.5,
             };
-            let y = rect.top() + pad + li as f32 * self.line_height;
+            let y = rect.top() + pad + li as f32 * lh;
+            if self.show_guides {
+                let base_y = y + self.project.font_size * 0.8 * scale;
+                ui.painter().line_segment(
+                    [Pos2::new(rect.left() + 8.0, base_y), Pos2::new(rect.right() - 8.0, base_y)],
+                    egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(80, 80, 90, 90)),
+                );
+                let mid = y + lh * 0.5;
+                ui.painter().line_segment(
+                    [Pos2::new(rect.left() + 8.0, mid), Pos2::new(rect.right() - 8.0, mid)],
+                    egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(60, 90, 120, 70)),
+                );
+            }
             for ch in line.chars() {
                 if let Some(g) = self.glyphs.iter().find(|g| g.id == ch as u32) {
                     let uv = Rect::from_min_max(
@@ -585,13 +736,38 @@ impl App {
                         Pos2::new((g.x + g.w) / tw, (g.y + g.h) / th),
                     );
                     let dest = Rect::from_min_size(
-                        Pos2::new(x + g.xoffset, y + g.yoffset),
-                        Vec2::new(g.w.max(1.0), g.h.max(1.0)),
+                        Pos2::new(x + g.xoffset * scale, y + g.yoffset * scale),
+                        Vec2::new((g.w * scale).max(1.0), (g.h * scale).max(1.0)),
                     );
                     ui.painter().image(tex.id(), dest, uv, Color32::WHITE);
-                    x += g.xadvance;
+                    hits.push((dest, ch, g));
+                    x += g.xadvance * scale;
                 } else {
-                    x += self.project.font_size * 0.5;
+                    let dest = Rect::from_min_size(
+                        Pos2::new(x, y + 4.0),
+                        Vec2::new(self.project.font_size * 0.45 * scale, lh * 0.7),
+                    );
+                    ui.painter().rect_stroke(
+                        dest,
+                        2.0,
+                        egui::Stroke::new(1.5_f32, Color32::from_rgb(220, 80, 60)),
+                        egui::StrokeKind::Inside,
+                    );
+                    x += self.project.font_size * 0.5 * scale;
+                }
+            }
+        }
+        if resp.clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                self.picked.clear();
+                for (dest, ch, g) in hits {
+                    if dest.contains(pos) {
+                        self.picked = format!(
+                            "「{ch}」 id={}  yoffset={}  xadvance={}  {}×{}",
+                            g.id, g.yoffset as i32, g.xadvance as i32, g.w as i32, g.h as i32
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -612,7 +788,8 @@ impl App {
                     self.project.font_bytes = bytes;
                     self.project.font_name = name;
                     self.project.font_path = Some(path.clone());
-                    self.font_path = Some(path);
+                    self.font_path = Some(path.clone());
+                    remember_recent(&mut self.recents, path);
                     self.dirty = true;
                 }
                 Err(e) => self.status = format!("读取失败：{e}"),
@@ -621,10 +798,13 @@ impl App {
     }
 
     fn export(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
+        let mut dlg = rfd::FileDialog::new()
             .set_file_name("font.fnt")
-            .add_filter("位图字体", &["fnt"])
-            .save_file()
+            .add_filter("位图字体", &["fnt"]);
+        if let Some(dir) = &self.last_export_dir {
+            dlg = dlg.set_directory(dir);
+        }
+        if let Some(path) = dlg.save_file()
         {
             match generate(&self.project) {
                 Ok(font) => {
@@ -632,6 +812,7 @@ impl App {
                     let dir = path.parent().unwrap_or(std::path::Path::new("."));
                     match write_font_files(&font, dir, stem) {
                         Ok(_) => {
+                            let _ = ProjectFile::write_sidecars(&self.project, dir, stem);
                             for sc in &self.project.extra_scales {
                                 if (*sc - 1.0).abs() < 0.01 {
                                     continue;
@@ -645,7 +826,11 @@ impl App {
                                     );
                                 }
                             }
-                            self.status = format!("已导出 {}", path.display());
+                            self.last_export_dir = Some(dir.to_path_buf());
+                            self.status = format!(
+                                "已导出 {}（含 .fntproj / .style.json，下次加字请打开工程）",
+                                path.display()
+                            );
                         }
                         Err(e) => self.status = format!("写出失败：{e}"),
                     }
@@ -736,33 +921,181 @@ impl App {
     }
 
     fn import_fnt(&mut self) {
+        self.start_wizard();
+    }
+
+    fn start_wizard(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("BMFont", &["fnt"])
             .pick_file()
         {
-            match std::fs::read_to_string(&path) {
-                Ok(text) => match parse_fnt(&text) {
-                    Ok(imp) => {
-                        let n0 = extract_chars(&self.charset_edit).chars().count();
-                        self.charset_edit = merge_chars(&self.charset_edit, &imp.chars);
-                        if imp.size > 0 {
-                            self.project.font_size = imp.size as f32;
+            self.open_wizard(path);
+        }
+    }
+
+    fn open_wizard(&mut self, path: PathBuf) {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match parse_fnt(&text) {
+                Ok(imp) => {
+                    let sidecars = discover_next_to_fnt(&path);
+                    let note = if sidecars.project.is_none() && sidecars.style.is_none() {
+                        "旁边没有 .fntproj / .style.json，只能合并字符，描边渐变对不上。请先用本工具重新导出一次。".into()
+                    } else {
+                        "已找到工程/样式，加字会沿用同一套效果。".into()
+                    };
+                    self.wizard = Some(AddWizard {
+                        fnt_path: path,
+                        imported_chars: imp.chars,
+                        extra: String::new(),
+                        sidecars,
+                        note,
+                    });
+                }
+                Err(e) => self.status = format!("解析 .fnt 失败：{e}"),
+            },
+            Err(e) => self.status = format!("读取失败：{e}"),
+        }
+    }
+
+    fn apply_wizard(&mut self) {
+        let Some(w) = self.wizard.take() else { return };
+        self.push_history();
+        if let Some(proj) = &w.sidecars.project {
+            if let Ok(pf) = ProjectFile::load(proj) {
+                pf.apply_to(&mut self.project);
+            }
+        } else if let Some(style) = &w.sidecars.style {
+            if let Ok(st) = ProjectFile::load_style(style) {
+                self.project.style = st;
+            }
+        }
+        if let Some(font) = &w.sidecars.font {
+            if let Ok(bytes) = std::fs::read(font) {
+                self.project.font_bytes = bytes;
+                self.project.font_path = Some(font.clone());
+                self.font_path = Some(font.clone());
+            }
+        }
+        self.charset_edit = merge_chars(&self.charset_edit, &w.imported_chars);
+        self.charset_edit = merge_chars(&self.charset_edit, &w.extra);
+        self.preview_edit = self.project.preview_text.clone();
+        self.sync_hex();
+        self.dirty = true;
+        let n = extract_chars(&self.charset_edit).chars().count();
+        self.status = format!("加字完成，当前 {} 字。{}", n, w.note);
+        remember_recent(&mut self.recents, w.fnt_path);
+    }
+
+    fn draw_wizard(&mut self, ctx: &egui::Context) {
+        if self.wizard.is_none() {
+            return;
+        }
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        {
+            let w = self.wizard.as_mut().unwrap();
+            egui::Window::new("加字向导")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(460.0)
+                .show(ctx, |ui| {
+                    ui.label(format!("旧字体：{}", w.fnt_path.display()));
+                    ui.label(format!(
+                        "原字符 {} 个",
+                        extract_chars(&w.imported_chars).chars().count()
+                    ));
+                    ui.label(format!(
+                        "工程 {}  · 样式 {}  · TTF {}  · PNG {}",
+                        yes(&w.sidecars.project),
+                        yes(&w.sidecars.style),
+                        yes(&w.sidecars.font),
+                        yes(&w.sidecars.png)
+                    ));
+                    ui.colored_label(
+                        if w.sidecars.project.is_none() {
+                            Color32::from_rgb(220, 140, 80)
+                        } else {
+                            C::MUTED
+                        },
+                        &w.note,
+                    );
+                    ui.label("追加字符");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut w.extra)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("粘贴要加的字"),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("合并并生成").clicked() {
+                            apply = true;
                         }
-                        if !imp.face.is_empty() {
-                            self.project.font_name = imp.face;
+                        if ui.button("取消").clicked() {
+                            cancel = true;
                         }
-                        let n1 = extract_chars(&self.charset_edit).chars().count();
-                        self.status = format!(
-                            "已导入 {}：{} 字，新增 {}。用「追加」继续加字。",
-                            path.display(),
-                            extract_chars(&imp.chars).chars().count(),
-                            n1.saturating_sub(n0)
-                        );
+                    });
+                });
+        }
+        if apply {
+            self.apply_wizard();
+        } else if cancel || !open {
+            self.wizard = None;
+        }
+    }
+
+    fn take_drops(&mut self, ctx: &egui::Context) {
+        let files: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        for path in files {
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            match ext.as_str() {
+                "ttf" | "otf" | "ttc" => {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        self.push_history();
+                        self.project.font_bytes = bytes;
+                        self.project.font_name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("font")
+                            .into();
+                        self.project.font_path = Some(path.clone());
+                        self.font_path = Some(path.clone());
+                        remember_recent(&mut self.recents, path);
                         self.dirty = true;
                     }
-                    Err(e) => self.status = format!("解析 .fnt 失败：{e}"),
-                },
-                Err(e) => self.status = format!("读取失败：{e}"),
+                }
+                "fnt" => self.open_wizard(path),
+                "json" | "fntproj" => {
+                    if let Ok(pf) = ProjectFile::load(&path) {
+                        self.push_history();
+                        pf.apply_to(&mut self.project);
+                        self.charset_edit = merge_chars(&self.charset_edit, &self.project.chars);
+                        self.preview_edit = self.project.preview_text.clone();
+                        self.sync_hex();
+                        self.dirty = true;
+                        self.status = format!("已套用 {}", path.display());
+                    } else if let Ok(st) = ProjectFile::load_style(&path) {
+                        self.push_history();
+                        self.project.style = st;
+                        self.sync_hex();
+                        self.dirty = true;
+                    }
+                }
+                "asl" | "psd" => {
+                    self.status = "请用顶栏「导入 ASL」打开该文件。".into();
+                }
+                _ => {}
             }
         }
     }
@@ -1057,5 +1390,47 @@ fn extract_sfnt(bytes: &[u8], start: usize) -> Option<Vec<u8>> {
 
 fn bundled_font() -> Vec<u8> {
     include_bytes!("../../../testdata/DejaVuSans.ttf").to_vec()
+}
+
+fn yes(p: &Option<PathBuf>) -> &'static str {
+    if p.is_some() { "有" } else { "无" }
+}
+
+fn recents_file() -> PathBuf {
+    if let Ok(app) = std::env::var("APPDATA") {
+        return PathBuf::from(app).join("FntForge").join("recents.json");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".fntforge").join("recents.json");
+    }
+    PathBuf::from("fntforge-recents.json")
+}
+
+fn load_recents() -> Vec<PathBuf> {
+    let p = recents_file();
+    let Ok(t) = std::fs::read_to_string(p) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<String>>(&t)
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .take(8)
+        .collect()
+}
+
+fn remember_recent(list: &mut Vec<PathBuf>, path: PathBuf) {
+    list.retain(|p| p != &path);
+    list.insert(0, path);
+    list.truncate(8);
+    let p = recents_file();
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let names: Vec<String> = list.iter().map(|x| x.to_string_lossy().into_owned()).collect();
+    if let Ok(t) = serde_json::to_string_pretty(&names) {
+        let _ = std::fs::write(p, t);
+    }
 }
 

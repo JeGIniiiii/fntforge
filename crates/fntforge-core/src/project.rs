@@ -158,4 +158,76 @@ impl ProjectFile {
         let t = std::fs::read_to_string(path)?;
         serde_json::from_str(&t).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
+
+    pub fn write_sidecars(project: &Project, dir: &Path, stem: &str) -> std::io::Result<()> {
+        Self::from_project(project).save(&dir.join(format!("{stem}.fntproj")))?;
+        Self::save_style(&project.style, &dir.join(format!("{stem}.style.json")))?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FntSidecars {
+    pub project: Option<PathBuf>,
+    pub style: Option<PathBuf>,
+    pub font: Option<PathBuf>,
+    pub png: Option<PathBuf>,
+}
+
+/// Look next to an existing `.fnt` for the engineering files needed to add glyphs.
+pub fn discover_next_to_fnt(fnt: &Path) -> FntSidecars {
+    let dir = fnt.parent().unwrap_or_else(|| Path::new("."));
+    let stem = fnt.file_stem().and_then(|s| s.to_str()).unwrap_or("font");
+    let mut out = FntSidecars::default();
+    for name in [
+        format!("{stem}.fntproj"),
+        format!("{stem}.fntproj.json"),
+        "font.fntproj".into(),
+    ] {
+        let p = dir.join(name);
+        if p.is_file() {
+            out.project = Some(p);
+            break;
+        }
+    }
+    let style = dir.join(format!("{stem}.style.json"));
+    if style.is_file() {
+        out.style = Some(style);
+    }
+    let png = dir.join(format!("{stem}.png"));
+    if png.is_file() {
+        out.png = Some(png);
+    }
+    if let Some(proj) = &out.project {
+        if let Ok(pf) = ProjectFile::load(proj) {
+            if let Some(fp) = pf.font_path {
+                let p = PathBuf::from(&fp);
+                if p.is_file() {
+                    out.font = Some(p);
+                } else {
+                    let beside = dir.join(Path::new(&fp).file_name().unwrap_or_default());
+                    if beside.is_file() {
+                        out.font = Some(beside);
+                    }
+                }
+            }
+        }
+    }
+    if out.font.is_none() {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let ext = p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(ext.as_str(), "ttf" | "otf" | "ttc") {
+                    out.font = Some(p);
+                    break;
+                }
+            }
+        }
+    }
+    out
 }

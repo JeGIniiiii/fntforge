@@ -12,7 +12,9 @@ pub use generate::{
     generate, generate_scaled, lua_snippet, missing_report, GeneratedFont, GlyphImage,
 };
 pub use pack::{pack_glyphs, PackOptions, PackedGlyph, PackedPage};
-pub use project::{AlignH, AlignV, Project, ProjectFile};
+pub use project::{
+    discover_next_to_fnt, AlignH, AlignV, FntSidecars, Project, ProjectFile,
+};
 
 pub use fntforge_fx::{
     Bevel, BlendMode, Contour, Fill, Glow, GradientOverlay, Overlay, Rgba8, Satin, Shadow, Stroke,
