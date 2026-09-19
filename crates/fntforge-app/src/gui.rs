@@ -219,7 +219,7 @@ impl eframe::App for App {
                 ui.add(egui::Slider::new(&mut self.project.font_size, 12.0..=128.0).text("字号"));
                 ui.checkbox(&mut self.project.tabular_nums, "等宽数字");
                 if ui
-                    .checkbox(&mut self.project.ascii_fallback, "符号用后备字体（修 + 圆环）")
+                    .checkbox(&mut self.project.ascii_fallback, "缺字时用后备字体")
                     .changed()
                 {
                     self.dirty = true;

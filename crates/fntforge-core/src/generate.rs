@@ -88,7 +88,7 @@ pub fn generate_scaled(project: &Project, scale: f32) -> Result<GeneratedFont> {
 
     let rendered: Vec<Rastered> = chars
         .par_iter()
-        .map(|&ch| raster_one(&fonts, ch, px, project, scale))
+        .map(|&ch| raster_one(&fonts, ch, px, project, scale, base))
         .collect();
 
     let mut missing = Vec::new();
@@ -124,6 +124,8 @@ pub fn generate_scaled(project: &Project, scale: f32) -> Result<GeneratedFont> {
             }
         }
     }
+
+    align_symbols_to_digits(&mut glyphs);
 
     for g in &glyphs {
         line_height = line_height.max(g.yoffset + g.image.height() as i32);
@@ -208,28 +210,54 @@ fn looks_like_hollow_box(bitmap: &[u8], w: u32, h: u32) -> bool {
 
 fn pick_font<'a>(fonts: &'a Fonts<'a>, ch: char, ascii_fallback: bool) -> (&'a Font, bool) {
     let primary_ok = has_glyph(fonts.primary, ch) || ch == ' ';
-    if primary_ok && !(ascii_fallback && ch.is_ascii() && !ch.is_ascii_alphabetic() && ch != ' ' && !ch.is_ascii_digit()) {
+    // Only steal Latin when the face is missing the glyph (or user forces fallback
+    // AND the primary glyph is a hollow .notdef). Never replace a real '+' just
+    // because it's ASCII — that was putting DejaVu on a CJK baseline.
+    if primary_ok {
         return (fonts.primary, false);
     }
-    // Decorative CJK title fonts often ship a circled/hollow '+' (.notdef-like).
-    if ch.is_ascii() && has_glyph(fonts.latin, ch) {
-        if !primary_ok || (ascii_fallback && !ch.is_ascii_alphabetic() && !ch.is_ascii_digit() && ch != ' ') {
-            return (fonts.latin, true);
-        }
+    if ascii_fallback && ch.is_ascii() && has_glyph(fonts.latin, ch) {
+        return (fonts.latin, true);
     }
-    if !primary_ok && has_glyph(fonts.cjk, ch) {
+    if has_glyph(fonts.cjk, ch) {
         return (fonts.cjk, true);
     }
-    if primary_ok {
-        (fonts.primary, false)
-    } else if has_glyph(fonts.latin, ch) {
-        (fonts.latin, true)
-    } else {
-        (fonts.primary, false)
+    if has_glyph(fonts.latin, ch) {
+        return (fonts.latin, true);
+    }
+    (fonts.primary, false)
+}
+
+fn is_math_symbol(ch: char) -> bool {
+    matches!(
+        ch,
+        '+' | '-' | '−' | '–' | '—' | '=' | '*' | '×' | '÷' | '±' | '＋' | '－'
+    )
+}
+
+/// Shift '+', '-' etc. so their bitmap center matches the digits' optical center.
+/// CJK title faces put '+' in the em-box; Latin digits sit on the baseline — that's
+/// the "plus is too high/low" bug, not a ring.
+fn align_symbols_to_digits(glyphs: &mut [GlyphImage]) {
+    let digit_centers: Vec<f32> = glyphs
+        .iter()
+        .filter(|g| g.ch.is_ascii_digit() && g.image.height() > 1)
+        .map(|g| g.yoffset as f32 + g.image.height() as f32 * 0.5)
+        .collect();
+    if digit_centers.is_empty() {
+        return;
+    }
+    let target = digit_centers.iter().sum::<f32>() / digit_centers.len() as f32;
+    for g in glyphs.iter_mut() {
+        if !is_math_symbol(g.ch) || g.image.height() <= 1 {
+            continue;
+        }
+        let cy = g.yoffset as f32 + g.image.height() as f32 * 0.5;
+        g.yoffset += (target - cy).round() as i32;
     }
 }
 
-fn raster_one(fonts: &Fonts, ch: char, px: f32, project: &Project, scale: f32) -> Rastered {
+fn raster_one(fonts: &Fonts, ch: char, px: f32, project: &Project, scale: f32, primary_base: i32) -> Rastered {
     let (mut font, mut from_fallback) = pick_font(fonts, ch, project.ascii_fallback);
     let (mut metrics, mut bitmap) = font.rasterize(ch, px);
 
@@ -273,12 +301,8 @@ fn raster_one(fonts: &Fonts, ch: char, px: f32, project: &Project, scale: f32) -
     };
     let pad = project.style.padding();
     let top_from_baseline = metrics.ymin + metrics.height as i32;
-    let yoffset = font
-        .horizontal_line_metrics(px)
-        .map(|m| m.ascent.round() as i32)
-        .unwrap_or(px.round() as i32)
-        - top_from_baseline
-        - pad;
+    // Always relative to the *primary* face's `base`, even if this glyph came from fallback.
+    let yoffset = primary_base - top_from_baseline - pad;
     let xoffset = metrics.xmin - pad;
     let xadvance = metrics.advance_width.round() as i32
         + (project.extra_letter_spacing as f32 * scale).round() as i32;
@@ -406,7 +430,6 @@ mod tests {
     use super::*;
     use crate::fnt::write_fnt;
     use crate::Project;
-    use fntforge_fx::{Fill, Rgba8};
 
     fn load() -> Vec<u8> {
         std::fs::read(concat!(
@@ -465,7 +488,21 @@ mod tests {
     }
 
     #[test]
-    fn fill_solid_constructor() {
-        let _ = Fill::solid(Rgba8::WHITE);
+    fn plus_vertically_centers_on_digits() {
+        let mut project = Project::new(load(), "DejaVuSans");
+        project.font_size = 48.0;
+        project.chars = "1+".into();
+        project.style = fntforge_fx::StyleStack::preset_gold();
+        let font = generate(&project).unwrap();
+        let one = font.glyphs.iter().find(|g| g.ch == '1').unwrap();
+        let plus = font.glyphs.iter().find(|g| g.ch == '+').unwrap();
+        let c1 = one.yoffset as f32 + one.height as f32 * 0.5;
+        let cp = plus.yoffset as f32 + plus.height as f32 * 0.5;
+        assert!(
+            (c1 - cp).abs() <= 1.5,
+            "plus optical center {cp} vs digit {c1} (yoff +={} 1={})",
+            plus.yoffset,
+            one.yoffset
+        );
     }
 }
