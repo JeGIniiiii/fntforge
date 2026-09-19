@@ -4,7 +4,7 @@
 
 在一个窗口里做好描边、投影、发光、渐变、斜面，然后导出 AngelCode BMFont（`.fnt` + PNG），可直接给 `cc.Label:createWithBMFont` 用。
 
-当前版本 **v0.2.0**（M1–M3）。
+当前版本 **v0.3.0**（M1–M4）。
 
 - Windows / macOS / Linux 原生 GUI（可双击运行），界面中文
 - 类 Photoshop 图层样式：填充/渐变、描边、投影、内外发光、颜色叠加、斜面浮雕、光泽
@@ -12,6 +12,7 @@
 - 标题美工字体缺「+」时自动用后备字体，避免画成圆环
 - 字符集预设（含 GB2312 一级常用字）、从 lua/txt 抽取、缺字报告
 - 工程文件 `.fntproj`、CLI 批处理、1x/@2x 同时导出
+- 导入已有 `.fnt` 抽字符集并加字，导出 `.style.json` 给同事套同一套样式
 - GitHub Actions 自动编译：Windows x64、macOS arm64、macOS x64、Linux x64
 
 ## 下载可执行程序

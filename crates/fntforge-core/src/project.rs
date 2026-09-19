@@ -147,4 +147,15 @@ impl ProjectFile {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         std::fs::write(path, t)
     }
+
+    pub fn save_style(style: &StyleStack, path: &Path) -> std::io::Result<()> {
+        let t = serde_json::to_string_pretty(style)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, t)
+    }
+
+    pub fn load_style(path: &Path) -> std::io::Result<StyleStack> {
+        let t = std::fs::read_to_string(path)?;
+        serde_json::from_str(&t).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
 }

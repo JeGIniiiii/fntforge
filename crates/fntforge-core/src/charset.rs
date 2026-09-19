@@ -41,6 +41,10 @@ pub fn extract_chars(input: &str) -> String {
     out
 }
 
+pub fn merge_chars(base: &str, extra: &str) -> String {
+    extract_chars(&format!("{base}{extra}"))
+}
+
 /// Pull characters out of txt / csv / lua / json by taking quoted strings plus raw text.
 pub fn extract_from_source(text: &str) -> String {
     let mut collected = String::new();
@@ -104,6 +108,15 @@ mod tests {
         assert!(s.contains('金'));
         assert!(s.contains('+'));
         assert!(s.contains('H'));
+    }
+
+    #[test]
+    fn merge_keeps_old_and_adds_new() {
+        let s = merge_chars("金1", "币1+");
+        assert!(s.contains('金'));
+        assert!(s.contains('币'));
+        assert!(s.contains('+'));
+        assert_eq!(s.chars().filter(|&c| c == '1').count(), 1);
     }
 
     #[test]

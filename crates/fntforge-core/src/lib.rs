@@ -6,8 +6,8 @@ mod generate;
 mod pack;
 mod project;
 
-pub use charset::{extract_chars, extract_from_source, preset_chars, CharsetPreset};
-pub use fnt::{write_files as write_font_files, write_fnt, BmFont};
+pub use charset::{extract_chars, extract_from_source, merge_chars, preset_chars, CharsetPreset};
+pub use fnt::{parse_fnt, write_files as write_font_files, write_fnt, BmFont, ImportedFnt};
 pub use generate::{
     generate, generate_scaled, lua_snippet, missing_report, GeneratedFont, GlyphImage,
 };
@@ -29,6 +29,8 @@ pub enum Error {
     Empty,
     #[error("glyph does not fit in atlas {0}x{0}")]
     AtlasTooSmall(u32),
+    #[error("invalid .fnt: {0}")]
+    Fnt(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("image: {0}")]

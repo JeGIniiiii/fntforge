@@ -3,8 +3,8 @@ use eframe::egui::{
     TextureOptions, Vec2,
 };
 use fntforge_core::{
-    extract_chars, extract_from_source, generate, write_fnt, write_font_files, AlignH, CharsetPreset,
-    Fill, Project, ProjectFile, Rgba8, StrokePosition, StyleStack,
+    extract_chars, extract_from_source, generate, merge_chars, parse_fnt, write_fnt, write_font_files,
+    AlignH, CharsetPreset, Fill, Project, ProjectFile, Rgba8, StrokePosition, StyleStack,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,6 +57,7 @@ struct App {
     atlas_size: Vec2,
     history: Vec<StyleStack>,
     missing: String,
+    append_edit: String,
 }
 
 impl App {
@@ -88,6 +89,7 @@ impl App {
             atlas_size: Vec2::splat(1.0),
             history: Vec::new(),
             missing: String::new(),
+            append_edit: String::new(),
         };
         app.rebuild(&cc.egui_ctx);
         app
@@ -178,6 +180,15 @@ impl eframe::App for App {
                     if ui.button("导出 .fnt").clicked() {
                         self.export();
                     }
+                    if ui.button("导出配置").clicked() {
+                        self.export_style();
+                    }
+                    if ui.button("导入配置").clicked() {
+                        self.import_style();
+                    }
+                    if ui.button("导入 .fnt").clicked() {
+                        self.import_fnt();
+                    }
                     if ui.button("保存工程").clicked() {
                         self.save_project();
                     }
@@ -241,7 +252,8 @@ impl eframe::App for App {
                         ("常用字", CharsetPreset::CommonZh),
                     ] {
                         if ui.button(name).clicked() {
-                            self.charset_edit = fntforge_core::preset_chars(p);
+                            self.charset_edit =
+                                merge_chars(&self.charset_edit, &fntforge_core::preset_chars(p));
                             self.dirty = true;
                         }
                     }
@@ -266,6 +278,21 @@ impl eframe::App for App {
                     )
                     .changed()
                 {
+                    self.dirty = true;
+                }
+                ui.label("追加（不覆盖已有字）");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.append_edit)
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("粘贴要加的字，例如：关卡BOSS"),
+                );
+                if ui.button("合并进字符集").clicked() {
+                    let n0 = extract_chars(&self.charset_edit).chars().count();
+                    self.charset_edit = merge_chars(&self.charset_edit, &self.append_edit);
+                    self.append_edit.clear();
+                    let n1 = extract_chars(&self.charset_edit).chars().count();
+                    self.status = format!("已追加 {} 字，当前 {} 字", n1.saturating_sub(n0), n1);
                     self.dirty = true;
                 }
                 ui.separator();
@@ -619,6 +646,88 @@ impl App {
                     }
                 }
                 Err(e) => self.status = format!("读取失败：{e}"),
+            }
+        }
+    }
+
+    fn import_fnt(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("BMFont", &["fnt"])
+            .pick_file()
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match parse_fnt(&text) {
+                    Ok(imp) => {
+                        let n0 = extract_chars(&self.charset_edit).chars().count();
+                        self.charset_edit = merge_chars(&self.charset_edit, &imp.chars);
+                        if imp.size > 0 {
+                            self.project.font_size = imp.size as f32;
+                        }
+                        if !imp.face.is_empty() {
+                            self.project.font_name = imp.face;
+                        }
+                        let n1 = extract_chars(&self.charset_edit).chars().count();
+                        self.status = format!(
+                            "已导入 {}：{} 字，新增 {}。用「追加」继续加字。",
+                            path.display(),
+                            extract_chars(&imp.chars).chars().count(),
+                            n1.saturating_sub(n0)
+                        );
+                        self.dirty = true;
+                    }
+                    Err(e) => self.status = format!("解析 .fnt 失败：{e}"),
+                },
+                Err(e) => self.status = format!("读取失败：{e}"),
+            }
+        }
+    }
+
+    fn export_style(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("font.style.json")
+            .add_filter("样式 JSON", &["json"])
+            .save_file()
+        {
+            match ProjectFile::save_style(&self.project.style, &path) {
+                Ok(_) => {
+                    if let Some(proj) = path
+                        .parent()
+                        .map(|d| d.join(format!(
+                            "{}.fntproj",
+                            path.file_stem().and_then(|s| s.to_str()).unwrap_or("font")
+                        )))
+                    {
+                        let _ = ProjectFile::from_project(&self.project).save(&proj);
+                    }
+                    self.status = format!("已导出配置 {}", path.display());
+                }
+                Err(e) => self.status = format!("导出配置失败：{e}"),
+            }
+        }
+    }
+
+    fn import_style(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("配置", &["json", "fntproj"])
+            .pick_file()
+        {
+            if let Ok(pf) = ProjectFile::load(&path) {
+                self.push_history();
+                pf.apply_to(&mut self.project);
+                self.charset_edit = merge_chars(&self.charset_edit, &self.project.chars);
+                self.preview_edit = self.project.preview_text.clone();
+                self.dirty = true;
+                self.status = format!("已导入工程配置 {}", path.display());
+                return;
+            }
+            match ProjectFile::load_style(&path) {
+                Ok(style) => {
+                    self.push_history();
+                    self.project.style = style;
+                    self.dirty = true;
+                    self.status = format!("已套用样式 {}", path.display());
+                }
+                Err(e) => self.status = format!("导入配置失败：{e}"),
             }
         }
     }
