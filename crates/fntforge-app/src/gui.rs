@@ -23,9 +23,10 @@ struct GlyphSpot {
 pub fn run() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1360.0, 840.0])
-            .with_min_inner_size([960.0, 640.0])
-            .with_title("FntForge"),
+            .with_inner_size([1440.0, 900.0])
+            .with_min_inner_size([1100.0, 700.0])
+            .with_title("FntForge")
+            .with_decorations(true),
         ..Default::default()
     };
     eframe::run_native(
@@ -79,7 +80,7 @@ impl App {
             glow_hex: "e6d060aa".into(),
             grad_a: "fff3a0".into(),
             grad_b: "b8841c".into(),
-            status: "打开含中文的 TTF。标题字缺「+」时会自动用后备字体，避免画成圆环。".into(),
+            status: "打开标题 TTF。字符集可导入已有 .fnt 再追加。".into(),
             atlas_tex: None,
             dirty: true,
             last_fnt_preview: String::new(),
@@ -168,40 +169,76 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("bar").show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("FntForge").strong().size(18.0));
-                ui.label(
-                    RichText::new("  面向 Cocos2d-x Lua 的位图字体")
-                        .color(Color32::from_rgb(139, 145, 154)),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("导出 .fnt").clicked() {
-                        self.export();
-                    }
-                    if ui.button("导出配置").clicked() {
-                        self.export_style();
-                    }
-                    if ui.button("导入配置").clicked() {
-                        self.import_style();
-                    }
-                    if ui.button("导入 .fnt").clicked() {
-                        self.import_fnt();
-                    }
-                    if ui.button("保存工程").clicked() {
-                        self.save_project();
-                    }
-                    if ui.button("打开工程").clicked() {
-                        self.open_project();
-                    }
-                    if ui.button("导入 ASL").clicked() {
-                        self.import_asl();
-                    }
-                    if ui.button("打开字体").clicked() {
+        apply_theme(ctx);
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(
+            egui::viewport::SystemTheme::Dark,
+        ));
+
+        egui::TopBottomPanel::top("bar")
+            .exact_height(88.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(C::BG)
+                    .inner_margin(egui::Margin::symmetric(16, 10)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new("FntForge")
+                                .size(20.0)
+                                .color(C::FG)
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Cocos2d-x Lua 位图字体")
+                                .size(12.0)
+                                .color(C::MUTED),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let export = egui::Button::new(
+                            RichText::new("  导出 .fnt  ").color(C::ACCENT_FG).strong(),
+                        )
+                        .fill(C::ACCENT)
+                        .min_size(Vec2::new(108.0, 36.0));
+                        if ui.add(export).clicked() {
+                            self.export();
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if ui.add(tool_btn("打开字体")).clicked() {
                         self.open_font();
                     }
-                    if ui.button("撤销").clicked() {
+                    if ui.add(tool_btn("打开工程")).clicked() {
+                        self.open_project();
+                    }
+                    if ui.add(tool_btn("保存工程")).clicked() {
+                        self.save_project();
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("|").color(C::LINE));
+                    ui.add_space(8.0);
+                    if ui.add(tool_btn("导入 .fnt")).clicked() {
+                        self.import_fnt();
+                    }
+                    if ui.add(tool_btn("导入配置")).clicked() {
+                        self.import_style();
+                    }
+                    if ui.add(tool_btn("导入 ASL")).clicked() {
+                        self.import_asl();
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("|").color(C::LINE));
+                    ui.add_space(8.0);
+                    if ui.add(tool_btn("导出配置")).clicked() {
+                        self.export_style();
+                    }
+                    if ui.add(tool_btn("撤销")).clicked() {
                         if let Some(s) = self.history.pop() {
                             self.project.style = s;
                             self.dirty = true;
@@ -209,24 +246,38 @@ impl eframe::App for App {
                     }
                 });
             });
-            ui.add_space(6.0);
-        });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(&self.status);
-                if let Some(p) = &self.font_path {
-                    ui.separator();
-                    ui.label(p.display().to_string());
-                }
+        egui::TopBottomPanel::bottom("status")
+            .exact_height(32.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(C::BG)
+                    .inner_margin(egui::Margin::symmetric(16, 6)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&self.status).size(12.0).color(C::MUTED));
+                    if let Some(p) = &self.font_path {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(p.display().to_string())
+                                .size(12.0)
+                                .color(C::SUBTLE),
+                        );
+                    }
+                });
             });
-        });
 
         egui::SidePanel::left("font")
-            .default_width(300.0)
+            .default_width(280.0)
+            .width_range(240.0..=360.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(C::PANEL)
+                    .inner_margin(egui::Margin::symmetric(14, 12)),
+            )
             .show(ctx, |ui| {
-                ui.add_space(8.0);
-                ui.label(RichText::new("字体").strong());
+                section_label(ui, "字体");
                 ui.add(egui::Slider::new(&mut self.project.font_size, 12.0..=128.0).text("字号"));
                 ui.checkbox(&mut self.project.tabular_nums, "等宽数字");
                 if ui
@@ -241,8 +292,8 @@ impl eframe::App for App {
                 ui.add(
                     egui::Slider::new(&mut self.project.extra_line_height, -16..=48).text("行距补偿"),
                 );
-                ui.separator();
-                ui.label(RichText::new("字符集").strong());
+                ui.add_space(10.0);
+                section_label(ui, "字符集");
                 ui.horizontal_wrapped(|ui| {
                     for (name, p) in [
                         ("ASCII", CharsetPreset::Ascii),
@@ -264,7 +315,7 @@ impl eframe::App for App {
                         .pick_file()
                     {
                         if let Ok(t) = std::fs::read_to_string(&path) {
-                            self.charset_edit = extract_from_source(&t);
+                            self.charset_edit = merge_chars(&self.charset_edit, &extract_from_source(&t));
                             self.dirty = true;
                         }
                     }
@@ -295,8 +346,8 @@ impl eframe::App for App {
                     self.status = format!("已追加 {} 字，当前 {} 字", n1.saturating_sub(n0), n1);
                     self.dirty = true;
                 }
-                ui.separator();
-                ui.label(RichText::new("图集").strong());
+                ui.add_space(10.0);
+                section_label(ui, "图集");
                 ui.add(
                     egui::Slider::new(&mut self.project.pack.max_size, 256..=4096).text("最大边长"),
                 );
@@ -315,10 +366,15 @@ impl eframe::App for App {
             });
 
         egui::SidePanel::right("style")
-            .default_width(320.0)
+            .default_width(300.0)
+            .width_range(260.0..=380.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(C::PANEL)
+                    .inner_margin(egui::Margin::symmetric(14, 12)),
+            )
             .show(ctx, |ui| {
-                ui.add_space(8.0);
-                ui.label(RichText::new("图层样式").strong());
+                section_label(ui, "图层样式");
                 ui.horizontal_wrapped(|ui| {
                     for (name, make) in [
                         ("金币", StyleStack::preset_gold as fn() -> StyleStack),
@@ -410,9 +466,16 @@ impl eframe::App for App {
                 }
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(C::BG)
+                    .inner_margin(egui::Margin::symmetric(16, 12)),
+            )
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("预览");
+                section_label(ui, "预览");
+                ui.add_space(12.0);
                 ui.selectable_value(&mut self.project.align_h, AlignH::Left, "左对齐");
                 ui.selectable_value(&mut self.project.align_h, AlignH::Center, "居中");
                 ui.selectable_value(&mut self.project.align_h, AlignH::Right, "右对齐");
@@ -428,15 +491,18 @@ impl eframe::App for App {
                 self.project.preview_text = self.preview_edit.clone();
             }
             self.paint_preview(ui);
-            ui.separator();
-            ui.label("图集");
+            ui.add_space(14.0);
+            section_label(ui, "图集");
             if let Some(tex) = &self.atlas_tex {
                 let avail = ui.available_size();
                 let size = tex.size_vec2();
-                let scale = (avail.x / size.x).min(avail.y * 0.45 / size.y).min(4.0);
-                ui.image((tex.id(), size * scale.max(0.1)));
+                let scale = (avail.x / size.x).min((avail.y - 80.0).max(80.0) / size.y).min(4.0);
+                ui.add(
+                    egui::Image::new((tex.id(), size * scale.max(0.1)))
+                        .bg_fill(C::PANEL),
+                );
             }
-            ui.separator();
+            ui.add_space(8.0);
             ui.collapsing(".fnt 文本", |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.last_fnt_preview)
@@ -482,7 +548,7 @@ impl App {
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(w.min(ui.available_width()), h), egui::Sense::hover());
         ui.painter()
-            .rect_filled(rect, 6.0, Color32::from_rgb(12, 16, 22));
+            .rect_filled(rect, 8.0, Color32::from_rgb(6, 7, 9));
         let tw = self.atlas_size.x.max(1.0);
         let th = self.atlas_size.y.max(1.0);
         for (li, line) in lines.iter().enumerate() {
@@ -739,32 +805,199 @@ fn effect_toggle(ui: &mut egui::Ui, on: &mut bool, label: &str, dirty: &mut bool
     }
 }
 
+struct C;
+impl C {
+    const BG: Color32 = Color32::from_rgb(9, 10, 12);
+    const PANEL: Color32 = Color32::from_rgb(16, 19, 24);
+    const RAISED: Color32 = Color32::from_rgb(23, 28, 35);
+    const FG: Color32 = Color32::from_rgb(238, 240, 242);
+    const MUTED: Color32 = Color32::from_rgb(154, 161, 170);
+    const SUBTLE: Color32 = Color32::from_rgb(107, 114, 124);
+    const LINE: Color32 = Color32::from_rgb(42, 48, 56);
+    const ACCENT: Color32 = Color32::from_rgb(197, 203, 212);
+    const ACCENT_FG: Color32 = Color32::from_rgb(10, 11, 13);
+}
+
+fn tool_btn(label: &str) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(label.to_owned()).size(13.0).color(C::FG))
+        .fill(C::RAISED)
+        .min_size(Vec2::new(0.0, 32.0))
+}
+
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new(text)
+            .size(11.0)
+            .color(C::SUBTLE)
+            .strong(),
+    );
+    ui.add_space(6.0);
+}
+
 fn apply_theme(ctx: &egui::Context) {
+    ctx.set_theme(egui::ThemePreference::Dark);
+
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = Color32::from_rgb(12, 14, 18);
-    visuals.window_fill = Color32::from_rgb(20, 24, 31);
-    visuals.extreme_bg_color = Color32::from_rgb(20, 24, 31);
-    visuals.override_text_color = Some(Color32::from_rgb(232, 234, 237));
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(32, 38, 46);
-    visuals.selection.bg_fill = Color32::from_rgb(106, 154, 163);
-    ctx.set_visuals(visuals);
+    visuals.dark_mode = true;
+    visuals.panel_fill = C::PANEL;
+    visuals.window_fill = C::PANEL;
+    visuals.extreme_bg_color = C::RAISED;
+    visuals.faint_bg_color = C::BG;
+    visuals.code_bg_color = C::RAISED;
+    visuals.override_text_color = Some(C::FG);
+    visuals.hyperlink_color = C::ACCENT;
+    visuals.selection.bg_fill = Color32::from_rgb(61, 70, 84);
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, C::ACCENT);
+    visuals.widgets.noninteractive.bg_fill = C::PANEL;
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, C::MUTED);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, C::LINE);
+    visuals.widgets.inactive.bg_fill = C::RAISED;
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, C::FG);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, C::LINE);
+    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(30, 36, 44);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, C::FG);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(70, 78, 88));
+    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(38, 45, 54);
+    visuals.widgets.active.corner_radius = egui::CornerRadius::same(4);
+    visuals.widgets.open.bg_fill = C::RAISED;
+    visuals.widgets.open.corner_radius = egui::CornerRadius::same(4);
+    visuals.window_corner_radius = egui::CornerRadius::ZERO;
+    visuals.menu_corner_radius = egui::CornerRadius::same(6);
+    visuals.window_shadow = egui::Shadow::NONE;
+    visuals.popup_shadow = egui::Shadow::NONE;
+
+    ctx.set_visuals_of(egui::Theme::Dark, visuals.clone());
+    ctx.set_visuals_of(egui::Theme::Light, visuals);
+
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = Vec2::new(8.0, 8.0);
+        style.spacing.button_padding = Vec2::new(12.0, 6.0);
+        style.spacing.slider_width = 140.0;
+        style.spacing.interact_size.y = 28.0;
+        style.visuals.window_corner_radius = egui::CornerRadius::ZERO;
+    });
 }
 
 fn apply_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
+    if let Some(bytes) = load_system_cjk() {
+        fonts.font_data.insert(
+            "cjk_system".into(),
+            Arc::new(FontData::from_owned(bytes)),
+        );
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            if let Some(list) = fonts.families.get_mut(&family) {
+                list.push("cjk_system".into());
+            }
+        }
+    }
     fonts.font_data.insert(
-        "cjk".to_owned(),
+        "cjk".into(),
         Arc::new(FontData::from_static(include_bytes!("../assets/ui_cjk.ttf"))),
     );
-    if let Some(prop) = fonts.families.get_mut(&FontFamily::Proportional) {
-        prop.insert(0, "cjk".to_owned());
-    }
-    if let Some(mono) = fonts.families.get_mut(&FontFamily::Monospace) {
-        mono.push("cjk".to_owned());
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        if let Some(list) = fonts.families.get_mut(&family) {
+            list.push("cjk".into());
+        }
     }
     ctx.set_fonts(fonts);
+}
+
+fn load_system_cjk() -> Option<Vec<u8>> {
+    let candidates = [
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\msyh.ttf",
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\simsun.ttc",
+        r"C:\Windows\Fonts\msjh.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    ];
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Some(ttf) = font_bytes_to_ttf(&bytes) {
+                return Some(ttf);
+            }
+        }
+    }
+    None
+}
+
+fn font_bytes_to_ttf(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.starts_with(b"ttcf") {
+        if bytes.len() < 16 {
+            return None;
+        }
+        let n = u32::from_be_bytes(bytes[8..12].try_into().ok()?);
+        if n == 0 {
+            return None;
+        }
+        let off = u32::from_be_bytes(bytes[12..16].try_into().ok()?) as usize;
+        extract_sfnt(bytes, off)
+    } else if bytes.len() > 16 {
+        Some(bytes.to_vec())
+    } else {
+        None
+    }
+}
+
+fn extract_sfnt(bytes: &[u8], start: usize) -> Option<Vec<u8>> {
+    if bytes.len() < start + 12 {
+        return None;
+    }
+    let num_tables = u16::from_be_bytes(bytes[start + 4..start + 6].try_into().ok()?) as usize;
+    let header_len = 12 + num_tables * 16;
+    if bytes.len() < start + header_len {
+        return None;
+    }
+    let mut recs = Vec::with_capacity(num_tables);
+    for i in 0..num_tables {
+        let o = start + 12 + i * 16;
+        let tag = [bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]];
+        let cs = u32::from_be_bytes(bytes[o + 4..o + 8].try_into().ok()?);
+        let off = u32::from_be_bytes(bytes[o + 8..o + 12].try_into().ok()?) as usize;
+        let len = u32::from_be_bytes(bytes[o + 12..o + 16].try_into().ok()?) as usize;
+        recs.push((tag, cs, off, len));
+    }
+    let mut cursor = header_len;
+    let mut new_recs = Vec::new();
+    let mut blobs = Vec::new();
+    for (tag, cs, off, len) in recs {
+        cursor = (cursor + 3) & !3;
+        new_recs.push((tag, cs, cursor as u32, len as u32));
+        let blob = bytes.get(off..off + len)?.to_vec();
+        blobs.push((cursor, blob));
+        cursor += len;
+    }
+    let mut out = Vec::with_capacity(cursor);
+    out.extend_from_slice(&bytes[start..start + 12]);
+    for (tag, cs, off, len) in new_recs {
+        out.extend_from_slice(&tag);
+        out.extend_from_slice(&cs.to_be_bytes());
+        out.extend_from_slice(&off.to_be_bytes());
+        out.extend_from_slice(&len.to_be_bytes());
+    }
+    let mut pos = out.len();
+    for (want, blob) in blobs {
+        while pos < want {
+            out.push(0);
+            pos += 1;
+        }
+        out.extend_from_slice(&blob);
+        pos += blob.len();
+    }
+    Some(out)
 }
 
 fn bundled_font() -> Vec<u8> {
     include_bytes!("../../../testdata/DejaVuSans.ttf").to_vec()
 }
+
