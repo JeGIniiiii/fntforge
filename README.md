@@ -4,7 +4,7 @@
 
 在一个窗口里做好描边、投影、发光、渐变、斜面，然后导出 AngelCode BMFont（`.fnt` + PNG），可直接给 `cc.Label:createWithBMFont` 用。
 
-当前版本 **v0.3.1**（M1–M4）。
+当前版本 **v0.3.2**（M1–M4）。
 
 - Windows / macOS / Linux 原生 GUI（可双击运行），界面中文
 - 类 Photoshop 图层样式：填充/渐变、描边、投影、内外发光、颜色叠加、斜面浮雕、光泽

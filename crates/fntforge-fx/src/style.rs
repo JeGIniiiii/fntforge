@@ -26,6 +26,14 @@ impl Rgba8 {
         }
     }
 
+    pub fn to_hex(self, with_alpha: bool) -> String {
+        if with_alpha {
+            format!("{:02x}{:02x}{:02x}{:02x}", self.r, self.g, self.b, self.a)
+        } else {
+            format!("{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+        }
+    }
+
     pub fn with_alpha(self, a: u8) -> Self {
         Self { a, ..self }
     }

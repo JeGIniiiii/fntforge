@@ -1,6 +1,6 @@
 use eframe::egui::{
-    self, Color32, FontData, FontDefinitions, FontFamily, Pos2, Rect, RichText, TextureHandle,
-    TextureOptions, Vec2,
+    self, color_picker::Alpha, Color32, FontData, FontDefinitions, FontFamily, Pos2, Rect, RichText,
+    TextureHandle, TextureOptions, Vec2,
 };
 use fntforge_core::{
     extract_chars, extract_from_source, generate, merge_chars, parse_fnt, write_fnt, write_font_files,
@@ -92,6 +92,7 @@ impl App {
             missing: String::new(),
             append_edit: String::new(),
         };
+        app.sync_hex();
         app.rebuild(&cc.egui_ctx);
         app
     }
@@ -100,6 +101,26 @@ impl App {
         self.history.push(self.project.style.clone());
         if self.history.len() > 32 {
             self.history.remove(0);
+        }
+    }
+
+    fn sync_hex(&mut self) {
+        self.stroke_hex = self.project.style.stroke.color.to_hex(true);
+        self.shadow_hex = self.project.style.drop_shadow.color.to_hex(true);
+        self.glow_hex = self.project.style.outer_glow.color.to_hex(true);
+        if let Some((_, c)) = self.project.style.gradient_overlay.stops.first() {
+            self.grad_a = c.to_hex(false);
+        }
+        if let Some((_, c)) = self.project.style.gradient_overlay.stops.last() {
+            self.grad_b = c.to_hex(false);
+        }
+        match &self.project.style.fill {
+            Fill::Solid { color } => self.fill_hex = color.to_hex(false),
+            Fill::Linear { stops, .. } => {
+                if let Some((_, c)) = stops.first() {
+                    self.fill_hex = c.to_hex(false);
+                }
+            }
         }
     }
 
@@ -175,42 +196,18 @@ impl eframe::App for App {
         ));
 
         egui::TopBottomPanel::top("bar")
-            .exact_height(88.0)
+            .exact_height(52.0)
             .frame(
                 egui::Frame::new()
                     .fill(C::BG)
-                    .inner_margin(egui::Margin::symmetric(16, 10)),
+                    .stroke(egui::Stroke::new(1.0_f32, C::LINE))
+                    .inner_margin(egui::Margin::symmetric(14, 8)),
             )
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(2.0);
-                        ui.label(
-                            RichText::new("FntForge")
-                                .size(20.0)
-                                .color(C::FG)
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Cocos2d-x Lua 位图字体")
-                                .size(12.0)
-                                .color(C::MUTED),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let export = egui::Button::new(
-                            RichText::new("  导出 .fnt  ").color(C::ACCENT_FG).strong(),
-                        )
-                        .fill(C::ACCENT)
-                        .min_size(Vec2::new(108.0, 36.0));
-                        if ui.add(export).clicked() {
-                            self.export();
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label(RichText::new("FntForge").size(16.0).color(C::FG).strong());
+                    ui.add_space(10.0);
                     if ui.add(tool_btn("打开字体")).clicked() {
                         self.open_font();
                     }
@@ -220,9 +217,7 @@ impl eframe::App for App {
                     if ui.add(tool_btn("保存工程")).clicked() {
                         self.save_project();
                     }
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("|").color(C::LINE));
-                    ui.add_space(8.0);
+                    ui.label(RichText::new("·").color(C::SUBTLE));
                     if ui.add(tool_btn("导入 .fnt")).clicked() {
                         self.import_fnt();
                     }
@@ -232,18 +227,27 @@ impl eframe::App for App {
                     if ui.add(tool_btn("导入 ASL")).clicked() {
                         self.import_asl();
                     }
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("|").color(C::LINE));
-                    ui.add_space(8.0);
+                    ui.label(RichText::new("·").color(C::SUBTLE));
                     if ui.add(tool_btn("导出配置")).clicked() {
                         self.export_style();
                     }
                     if ui.add(tool_btn("撤销")).clicked() {
                         if let Some(s) = self.history.pop() {
                             self.project.style = s;
+                            self.sync_hex();
                             self.dirty = true;
                         }
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let export = egui::Button::new(
+                            RichText::new("  导出 .fnt  ").color(C::ACCENT_FG).strong(),
+                        )
+                        .fill(C::ACCENT)
+                        .min_size(Vec2::new(108.0, 32.0));
+                        if ui.add(export).clicked() {
+                            self.export();
+                        }
+                    });
                 });
             });
 
@@ -277,6 +281,7 @@ impl eframe::App for App {
                     .inner_margin(egui::Margin::symmetric(14, 12)),
             )
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 section_label(ui, "字体");
                 ui.add(egui::Slider::new(&mut self.project.font_size, 12.0..=128.0).text("字号"));
                 ui.checkbox(&mut self.project.tabular_nums, "等宽数字");
@@ -363,6 +368,7 @@ impl eframe::App for App {
                         );
                     });
                 }
+                });
             });
 
         egui::SidePanel::right("style")
@@ -374,6 +380,7 @@ impl eframe::App for App {
                     .inner_margin(egui::Margin::symmetric(14, 12)),
             )
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 section_label(ui, "图层样式");
                 ui.horizontal_wrapped(|ui| {
                     for (name, make) in [
@@ -386,20 +393,18 @@ impl eframe::App for App {
                         ("石刻", StyleStack::preset_stone),
                         ("像素", StyleStack::preset_pixel),
                     ] {
-                        if ui.button(name).clicked() {
+                        if ui.add(tool_btn(name)).clicked() {
                             self.push_history();
                             self.project.style = make();
+                            self.sync_hex();
                             self.dirty = true;
                         }
                     }
                 });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("填充");
-                    if ui.text_edit_singleline(&mut self.fill_hex).changed() {
-                        self.dirty = true;
-                    }
-                });
+                ui.add_space(8.0);
+                if color_row(ui, "填充", &mut self.fill_hex, false) {
+                    self.dirty = true;
+                }
                 if ui
                     .checkbox(&mut self.project.style.gradient_overlay.enabled, "渐变叠加")
                     .changed()
@@ -407,63 +412,71 @@ impl eframe::App for App {
                     self.dirty = true;
                 }
                 if self.project.style.gradient_overlay.enabled {
-                    ui.horizontal(|ui| {
-                        ui.label("A");
-                        ui.text_edit_singleline(&mut self.grad_a);
-                        ui.label("B");
-                        ui.text_edit_singleline(&mut self.grad_b);
-                    });
+                    if color_row(ui, "渐变 A", &mut self.grad_a, false) {
+                        self.dirty = true;
+                    }
+                    if color_row(ui, "渐变 B", &mut self.grad_b, false) {
+                        self.dirty = true;
+                    }
                     ui.add(
                         egui::Slider::new(&mut self.project.style.gradient_overlay.angle_deg, 0.0..=360.0)
                             .text("角度"),
                     );
                 }
-                ui.separator();
+                ui.add_space(6.0);
                 effect_toggle(ui, &mut self.project.style.stroke.enabled, "描边", &mut self.dirty);
-                ui.add(egui::Slider::new(&mut self.project.style.stroke.size, 0.5..=12.0).text("大小"));
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Outer, "外");
-                    ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Center, "中");
-                    ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Inner, "内");
-                });
-                ui.horizontal(|ui| {
-                    ui.label("颜色");
-                    ui.text_edit_singleline(&mut self.stroke_hex);
-                });
-                ui.separator();
+                if self.project.style.stroke.enabled {
+                    ui.add(egui::Slider::new(&mut self.project.style.stroke.size, 0.5..=12.0).text("大小"));
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Outer, "外");
+                        ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Center, "中");
+                        ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Inner, "内");
+                    });
+                    if color_row(ui, "描边色", &mut self.stroke_hex, true) {
+                        self.dirty = true;
+                    }
+                }
+                ui.add_space(6.0);
                 effect_toggle(ui, &mut self.project.style.drop_shadow.enabled, "投影", &mut self.dirty);
-                ui.add(
-                    egui::Slider::new(&mut self.project.style.drop_shadow.distance, 0.0..=16.0).text("距离"),
-                );
-                ui.add(egui::Slider::new(&mut self.project.style.drop_shadow.size, 0.0..=16.0).text("模糊"));
-                ui.add(
-                    egui::Slider::new(&mut self.project.style.global_light.angle_deg, 0.0..=360.0)
-                        .text("全局光角度"),
-                );
-                ui.horizontal(|ui| {
-                    ui.label("颜色");
-                    ui.text_edit_singleline(&mut self.shadow_hex);
-                });
-                ui.separator();
+                if self.project.style.drop_shadow.enabled {
+                    ui.add(
+                        egui::Slider::new(&mut self.project.style.drop_shadow.distance, 0.0..=16.0).text("距离"),
+                    );
+                    ui.add(egui::Slider::new(&mut self.project.style.drop_shadow.size, 0.0..=16.0).text("模糊"));
+                    ui.add(
+                        egui::Slider::new(&mut self.project.style.global_light.angle_deg, 0.0..=360.0)
+                            .text("光照角度"),
+                    );
+                    if color_row(ui, "投影色", &mut self.shadow_hex, true) {
+                        self.dirty = true;
+                    }
+                }
+                ui.add_space(6.0);
                 effect_toggle(ui, &mut self.project.style.outer_glow.enabled, "外发光", &mut self.dirty);
-                ui.add(egui::Slider::new(&mut self.project.style.outer_glow.size, 0.5..=24.0).text("大小"));
-                ui.horizontal(|ui| {
-                    ui.label("颜色");
-                    ui.text_edit_singleline(&mut self.glow_hex);
-                });
+                if self.project.style.outer_glow.enabled {
+                    ui.add(egui::Slider::new(&mut self.project.style.outer_glow.size, 0.5..=24.0).text("大小"));
+                    if color_row(ui, "发光色", &mut self.glow_hex, true) {
+                        self.dirty = true;
+                    }
+                }
                 effect_toggle(ui, &mut self.project.style.inner_shadow.enabled, "内阴影", &mut self.dirty);
                 effect_toggle(ui, &mut self.project.style.inner_glow.enabled, "内发光", &mut self.dirty);
                 effect_toggle(ui, &mut self.project.style.color_overlay.enabled, "颜色叠加", &mut self.dirty);
                 effect_toggle(ui, &mut self.project.style.bevel.enabled, "斜面浮雕", &mut self.dirty);
                 effect_toggle(ui, &mut self.project.style.satin.enabled, "光泽", &mut self.dirty);
-                if ui.button("应用样式").clicked() {
-                    self.dirty = true;
-                }
-                if ui.button("重置样式").clicked() {
-                    self.push_history();
-                    self.project.style = StyleStack::default();
-                    self.dirty = true;
-                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.add(tool_btn("应用样式")).clicked() {
+                        self.dirty = true;
+                    }
+                    if ui.add(tool_btn("重置样式")).clicked() {
+                        self.push_history();
+                        self.project.style = StyleStack::default();
+                        self.sync_hex();
+                        self.dirty = true;
+                    }
+                });
+                });
             });
 
         egui::CentralPanel::default()
@@ -548,7 +561,13 @@ impl App {
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(w.min(ui.available_width()), h), egui::Sense::hover());
         ui.painter()
-            .rect_filled(rect, 8.0, Color32::from_rgb(6, 7, 9));
+            .rect_filled(rect, 0.0, Color32::BLACK);
+        ui.painter().rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0_f32, C::LINE),
+            egui::StrokeKind::Inside,
+        );
         let tw = self.atlas_size.x.max(1.0);
         let th = self.atlas_size.y.max(1.0);
         for (li, line) in lines.iter().enumerate() {
@@ -782,6 +801,7 @@ impl App {
                 pf.apply_to(&mut self.project);
                 self.charset_edit = merge_chars(&self.charset_edit, &self.project.chars);
                 self.preview_edit = self.project.preview_text.clone();
+                self.sync_hex();
                 self.dirty = true;
                 self.status = format!("已导入工程配置 {}", path.display());
                 return;
@@ -790,6 +810,7 @@ impl App {
                 Ok(style) => {
                     self.push_history();
                     self.project.style = style;
+                    self.sync_hex();
                     self.dirty = true;
                     self.status = format!("已套用样式 {}", path.display());
                 }
@@ -807,32 +828,69 @@ fn effect_toggle(ui: &mut egui::Ui, on: &mut bool, label: &str, dirty: &mut bool
 
 struct C;
 impl C {
-    const BG: Color32 = Color32::from_rgb(9, 10, 12);
-    const PANEL: Color32 = Color32::from_rgb(16, 19, 24);
-    const RAISED: Color32 = Color32::from_rgb(23, 28, 35);
-    const FG: Color32 = Color32::from_rgb(238, 240, 242);
-    const MUTED: Color32 = Color32::from_rgb(154, 161, 170);
-    const SUBTLE: Color32 = Color32::from_rgb(107, 114, 124);
-    const LINE: Color32 = Color32::from_rgb(42, 48, 56);
-    const ACCENT: Color32 = Color32::from_rgb(197, 203, 212);
-    const ACCENT_FG: Color32 = Color32::from_rgb(10, 11, 13);
+    const BG: Color32 = Color32::from_rgb(0, 0, 0);
+    const PANEL: Color32 = Color32::from_rgb(8, 8, 9);
+    const RAISED: Color32 = Color32::from_rgb(18, 18, 20);
+    const FG: Color32 = Color32::from_rgb(240, 240, 242);
+    const MUTED: Color32 = Color32::from_rgb(140, 140, 146);
+    const SUBTLE: Color32 = Color32::from_rgb(88, 88, 94);
+    const LINE: Color32 = Color32::from_rgb(32, 32, 36);
+    const ACCENT: Color32 = Color32::from_rgb(232, 232, 236);
+    const ACCENT_FG: Color32 = Color32::from_rgb(0, 0, 0);
 }
 
 fn tool_btn(label: &str) -> egui::Button<'static> {
     egui::Button::new(RichText::new(label.to_owned()).size(13.0).color(C::FG))
         .fill(C::RAISED)
-        .min_size(Vec2::new(0.0, 32.0))
+        .stroke(egui::Stroke::new(1.0_f32, C::LINE))
+        .min_size(Vec2::new(0.0, 30.0))
 }
 
 fn section_label(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(2.0);
-    ui.label(
-        RichText::new(text)
-            .size(11.0)
-            .color(C::SUBTLE)
-            .strong(),
-    );
-    ui.add_space(6.0);
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.painter().rect_filled(
+            Rect::from_min_size(ui.cursor().min, Vec2::new(2.0, 12.0)),
+            0.0,
+            C::ACCENT,
+        );
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(text)
+                .size(11.0)
+                .color(C::MUTED)
+                .strong(),
+        );
+    });
+    ui.add_space(8.0);
+}
+
+fn color_row(ui: &mut egui::Ui, label: &str, hex: &mut String, with_alpha: bool) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(12.0).color(C::MUTED));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let c = Rgba8::from_hex(hex);
+            let mut col = Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
+            let alpha = if with_alpha {
+                Alpha::OnlyBlend
+            } else {
+                Alpha::Opaque
+            };
+            if egui::color_picker::color_edit_button_srgba(ui, &mut col, alpha).changed() {
+                let n = Rgba8::new(col.r(), col.g(), col.b(), col.a());
+                *hex = n.to_hex(with_alpha);
+                changed = true;
+            }
+            let edit = egui::TextEdit::singleline(hex)
+                .desired_width(86.0)
+                .font(egui::TextStyle::Monospace);
+            if ui.add(edit).changed() {
+                changed = true;
+            }
+        });
+    });
+    changed
 }
 
 fn apply_theme(ctx: &egui::Context) {
