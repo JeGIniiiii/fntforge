@@ -3,8 +3,8 @@ use eframe::egui::{
     TextureOptions, Vec2,
 };
 use fntforge_core::{
-    extract_chars, generate, write_fnt, write_font_files, AlignH, CharsetPreset, Fill, Project,
-    Rgba8, StrokePosition, StyleStack,
+    extract_chars, extract_from_source, generate, write_fnt, write_font_files, AlignH, CharsetPreset,
+    Fill, Project, ProjectFile, Rgba8, StrokePosition, StyleStack,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ struct GlyphSpot {
 pub fn run() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
+            .with_inner_size([1360.0, 840.0])
             .with_min_inner_size([960.0, 640.0])
             .with_title("FntForge"),
         ..Default::default()
@@ -45,6 +45,8 @@ struct App {
     stroke_hex: String,
     shadow_hex: String,
     glow_hex: String,
+    grad_a: String,
+    grad_b: String,
     status: String,
     atlas_tex: Option<TextureHandle>,
     dirty: bool,
@@ -53,6 +55,8 @@ struct App {
     glyphs: Vec<GlyphSpot>,
     line_height: f32,
     atlas_size: Vec2,
+    history: Vec<StyleStack>,
+    missing: String,
 }
 
 impl App {
@@ -61,23 +65,20 @@ impl App {
         apply_fonts(&cc.egui_ctx);
         let bytes = bundled_font();
         let mut project = Project::new(bytes, "DejaVu Sans");
-        project.style.stroke.enabled = true;
-        project.style.stroke.size = 2.0;
-        project.style.stroke.color = Rgba8::new(20, 24, 28, 255);
-        project.style.fill = Fill::Solid(Rgba8::new(236, 239, 241, 255));
-        project.style.drop_shadow.enabled = true;
-        project.chars = fntforge_core::preset_chars(CharsetPreset::GameHud);
+        project.style = StyleStack::preset_gold();
         let charset_edit = project.chars.clone();
         let preview_edit = project.preview_text.clone();
         let mut app = Self {
             project,
             charset_edit,
             preview_edit,
-            fill_hex: "eceff1".into(),
-            stroke_hex: "14181c".into(),
+            fill_hex: "e8c44a".into(),
+            stroke_hex: "2a1808".into(),
             shadow_hex: "000000a0".into(),
-            glow_hex: "6a9aa3".into(),
-            status: "打开一款含中文的 TTF，调整图层样式，导出给 Cocos2d-x Lua。".into(),
+            glow_hex: "e6d060aa".into(),
+            grad_a: "fff3a0".into(),
+            grad_b: "b8841c".into(),
+            status: "打开含中文的 TTF。标题字缺「+」时会自动用后备字体，避免画成圆环。".into(),
             atlas_tex: None,
             dirty: true,
             last_fnt_preview: String::new(),
@@ -85,15 +86,34 @@ impl App {
             glyphs: Vec::new(),
             line_height: 48.0,
             atlas_size: Vec2::splat(1.0),
+            history: Vec::new(),
+            missing: String::new(),
         };
         app.rebuild(&cc.egui_ctx);
         app
     }
 
+    fn push_history(&mut self) {
+        self.history.push(self.project.style.clone());
+        if self.history.len() > 32 {
+            self.history.remove(0);
+        }
+    }
+
     fn rebuild(&mut self, ctx: &egui::Context) {
         self.project.chars = extract_chars(&self.charset_edit);
         self.project.preview_text = self.preview_edit.clone();
-        self.project.style.fill = Fill::Solid(Rgba8::from_hex(&self.fill_hex));
+        if self.project.style.gradient_overlay.enabled {
+            self.project.style.fill = Fill::Linear {
+                angle_deg: self.project.style.gradient_overlay.angle_deg,
+                stops: vec![
+                    (0.0, Rgba8::from_hex(&self.grad_a)),
+                    (1.0, Rgba8::from_hex(&self.grad_b)),
+                ],
+            };
+        } else {
+            self.project.style.fill = Fill::solid(Rgba8::from_hex(&self.fill_hex));
+        }
         self.project.style.stroke.color = Rgba8::from_hex(&self.stroke_hex);
         self.project.style.drop_shadow.color = Rgba8::from_hex(&self.shadow_hex);
         self.project.style.outer_glow.color = Rgba8::from_hex(&self.glow_hex);
@@ -126,19 +146,20 @@ impl App {
                     .collect();
                 self.line_height = font.line_height as f32;
                 self.last_fnt_preview = write_fnt(&font, "preview").text;
+                self.missing = fntforge_core::missing_report(&font);
                 self.status = format!(
-                    "{} 个字形 · {}×{} · 行高 {} · 基线 {}",
+                    "{} 个字形 · {}×{} · {} 页 · 行高 {} · 缺字 {} · 后备 {}",
                     font.glyphs.len(),
                     font.scale_w,
                     font.scale_h,
+                    font.pages.len(),
                     font.line_height,
-                    font.base
+                    font.missing.len(),
+                    font.fallback_used.len()
                 );
                 self.dirty = false;
             }
-            Err(e) => {
-                self.status = format!("生成失败：{e}");
-            }
+            Err(e) => self.status = format!("生成失败：{e}"),
         }
     }
 }
@@ -155,48 +176,24 @@ impl eframe::App for App {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("导出 .fnt").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name("font.fnt")
-                            .add_filter("位图字体", &["fnt"])
-                            .save_file()
-                        {
-                            match generate(&self.project) {
-                                Ok(font) => {
-                                    let stem = path
-                                        .file_stem()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("font");
-                                    let dir = path.parent().unwrap_or(std::path::Path::new("."));
-                                    match write_font_files(&font, dir, stem) {
-                                        Ok(_) => {
-                                            self.status = format!("已导出 {}", path.display())
-                                        }
-                                        Err(e) => self.status = format!("写出失败：{e}"),
-                                    }
-                                }
-                                Err(e) => self.status = format!("生成失败：{e}"),
-                            }
-                        }
+                        self.export();
+                    }
+                    if ui.button("保存工程").clicked() {
+                        self.save_project();
+                    }
+                    if ui.button("打开工程").clicked() {
+                        self.open_project();
+                    }
+                    if ui.button("导入 ASL").clicked() {
+                        self.import_asl();
                     }
                     if ui.button("打开字体").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("字体文件", &["ttf", "otf", "ttc"])
-                            .pick_file()
-                        {
-                            match std::fs::read(&path) {
-                                Ok(bytes) => {
-                                    let name = path
-                                        .file_stem()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("font")
-                                        .to_string();
-                                    self.project.font_bytes = bytes;
-                                    self.project.font_name = name;
-                                    self.font_path = Some(path);
-                                    self.dirty = true;
-                                }
-                                Err(e) => self.status = format!("读取失败：{e}"),
-                            }
+                        self.open_font();
+                    }
+                    if ui.button("撤销").clicked() {
+                        if let Some(s) = self.history.pop() {
+                            self.project.style = s;
+                            self.dirty = true;
                         }
                     }
                 });
@@ -215,45 +212,56 @@ impl eframe::App for App {
         });
 
         egui::SidePanel::left("font")
-            .default_width(280.0)
+            .default_width(300.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
                 ui.label(RichText::new("字体").strong());
                 ui.add(egui::Slider::new(&mut self.project.font_size, 12.0..=128.0).text("字号"));
                 ui.checkbox(&mut self.project.tabular_nums, "等宽数字");
+                if ui
+                    .checkbox(&mut self.project.ascii_fallback, "符号用后备字体（修 + 圆环）")
+                    .changed()
+                {
+                    self.dirty = true;
+                }
                 ui.add(
-                    egui::Slider::new(&mut self.project.extra_letter_spacing, -8..=16)
-                        .text("字距"),
+                    egui::Slider::new(&mut self.project.extra_letter_spacing, -8..=16).text("字距"),
                 );
                 ui.add(
-                    egui::Slider::new(&mut self.project.extra_line_height, -16..=48)
-                        .text("行距补偿"),
+                    egui::Slider::new(&mut self.project.extra_line_height, -16..=48).text("行距补偿"),
                 );
                 ui.separator();
                 ui.label(RichText::new("字符集").strong());
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("ASCII").clicked() {
-                        self.charset_edit = fntforge_core::preset_chars(CharsetPreset::Ascii);
-                        self.dirty = true;
-                    }
-                    if ui.button("数字").clicked() {
-                        self.charset_edit = fntforge_core::preset_chars(CharsetPreset::Numbers);
-                        self.dirty = true;
-                    }
-                    if ui.button("HUD 中文").clicked() {
-                        self.charset_edit = fntforge_core::preset_chars(CharsetPreset::GameHud);
-                        self.dirty = true;
-                    }
-                    if ui.button("标点").clicked() {
-                        self.charset_edit = fntforge_core::preset_chars(CharsetPreset::CommonPunct);
-                        self.dirty = true;
+                    for (name, p) in [
+                        ("ASCII", CharsetPreset::Ascii),
+                        ("数字", CharsetPreset::Numbers),
+                        ("HUD", CharsetPreset::GameHud),
+                        ("标点", CharsetPreset::CommonPunct),
+                        ("常用字", CharsetPreset::CommonZh),
+                    ] {
+                        if ui.button(name).clicked() {
+                            self.charset_edit = fntforge_core::preset_chars(p);
+                            self.dirty = true;
+                        }
                     }
                 });
+                if ui.button("从文案文件抽取").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("文本", &["txt", "lua", "csv", "json", "xml"])
+                        .pick_file()
+                    {
+                        if let Ok(t) = std::fs::read_to_string(&path) {
+                            self.charset_edit = extract_from_source(&t);
+                            self.dirty = true;
+                        }
+                    }
+                }
                 ui.label("字符");
                 if ui
                     .add(
                         egui::TextEdit::multiline(&mut self.charset_edit)
-                            .desired_rows(6)
+                            .desired_rows(5)
                             .desired_width(f32::INFINITY),
                     )
                     .changed()
@@ -263,116 +271,113 @@ impl eframe::App for App {
                 ui.separator();
                 ui.label(RichText::new("图集").strong());
                 ui.add(
-                    egui::Slider::new(&mut self.project.pack.max_size, 256..=4096)
-                        .text("最大边长"),
+                    egui::Slider::new(&mut self.project.pack.max_size, 256..=4096).text("最大边长"),
                 );
                 ui.checkbox(&mut self.project.pack.power_of_two, "二次幂");
                 ui.checkbox(&mut self.project.pack.square, "正方形");
+                if !self.missing.is_empty() {
+                    ui.separator();
+                    ui.collapsing("缺字 / 后备", |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.missing)
+                                .desired_rows(6)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                }
             });
 
         egui::SidePanel::right("style")
-            .default_width(300.0)
+            .default_width(320.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
                 ui.label(RichText::new("图层样式").strong());
+                ui.horizontal_wrapped(|ui| {
+                    for (name, make) in [
+                        ("金币", StyleStack::preset_gold as fn() -> StyleStack),
+                        ("血量", StyleStack::preset_hp_red),
+                        ("白描边", StyleStack::preset_white_outline),
+                        ("暴击", StyleStack::preset_crit),
+                        ("霓虹", StyleStack::preset_neon),
+                        ("禁用", StyleStack::preset_disabled),
+                        ("石刻", StyleStack::preset_stone),
+                        ("像素", StyleStack::preset_pixel),
+                    ] {
+                        if ui.button(name).clicked() {
+                            self.push_history();
+                            self.project.style = make();
+                            self.dirty = true;
+                        }
+                    }
+                });
+                ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("填充");
                     if ui.text_edit_singleline(&mut self.fill_hex).changed() {
                         self.dirty = true;
                     }
                 });
-                ui.separator();
                 if ui
-                    .checkbox(&mut self.project.style.stroke.enabled, "描边")
+                    .checkbox(&mut self.project.style.gradient_overlay.enabled, "渐变叠加")
                     .changed()
                 {
                     self.dirty = true;
                 }
-                ui.add(
-                    egui::Slider::new(&mut self.project.style.stroke.size, 0.5..=12.0).text("大小"),
-                );
+                if self.project.style.gradient_overlay.enabled {
+                    ui.horizontal(|ui| {
+                        ui.label("A");
+                        ui.text_edit_singleline(&mut self.grad_a);
+                        ui.label("B");
+                        ui.text_edit_singleline(&mut self.grad_b);
+                    });
+                    ui.add(
+                        egui::Slider::new(&mut self.project.style.gradient_overlay.angle_deg, 0.0..=360.0)
+                            .text("角度"),
+                    );
+                }
+                ui.separator();
+                effect_toggle(ui, &mut self.project.style.stroke.enabled, "描边", &mut self.dirty);
+                ui.add(egui::Slider::new(&mut self.project.style.stroke.size, 0.5..=12.0).text("大小"));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(
-                        &mut self.project.style.stroke.position,
-                        StrokePosition::Outer,
-                        "外",
-                    );
-                    ui.selectable_value(
-                        &mut self.project.style.stroke.position,
-                        StrokePosition::Center,
-                        "中",
-                    );
-                    ui.selectable_value(
-                        &mut self.project.style.stroke.position,
-                        StrokePosition::Inner,
-                        "内",
-                    );
+                    ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Outer, "外");
+                    ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Center, "中");
+                    ui.selectable_value(&mut self.project.style.stroke.position, StrokePosition::Inner, "内");
                 });
                 ui.horizontal(|ui| {
                     ui.label("颜色");
                     ui.text_edit_singleline(&mut self.stroke_hex);
                 });
                 ui.separator();
-                if ui
-                    .checkbox(&mut self.project.style.drop_shadow.enabled, "投影")
-                    .changed()
-                {
-                    self.dirty = true;
-                }
+                effect_toggle(ui, &mut self.project.style.drop_shadow.enabled, "投影", &mut self.dirty);
                 ui.add(
-                    egui::Slider::new(&mut self.project.style.drop_shadow.distance, 0.0..=16.0)
-                        .text("距离"),
+                    egui::Slider::new(&mut self.project.style.drop_shadow.distance, 0.0..=16.0).text("距离"),
                 );
+                ui.add(egui::Slider::new(&mut self.project.style.drop_shadow.size, 0.0..=16.0).text("模糊"));
                 ui.add(
-                    egui::Slider::new(&mut self.project.style.drop_shadow.size, 0.0..=16.0)
-                        .text("模糊"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut self.project.style.drop_shadow.angle_deg, 0.0..=360.0)
-                        .text("角度"),
+                    egui::Slider::new(&mut self.project.style.global_light.angle_deg, 0.0..=360.0)
+                        .text("全局光角度"),
                 );
                 ui.horizontal(|ui| {
                     ui.label("颜色");
                     ui.text_edit_singleline(&mut self.shadow_hex);
                 });
                 ui.separator();
-                if ui
-                    .checkbox(&mut self.project.style.outer_glow.enabled, "外发光")
-                    .changed()
-                {
-                    self.dirty = true;
-                }
-                ui.add(
-                    egui::Slider::new(&mut self.project.style.outer_glow.size, 0.5..=24.0)
-                        .text("大小"),
-                );
+                effect_toggle(ui, &mut self.project.style.outer_glow.enabled, "外发光", &mut self.dirty);
+                ui.add(egui::Slider::new(&mut self.project.style.outer_glow.size, 0.5..=24.0).text("大小"));
                 ui.horizontal(|ui| {
                     ui.label("颜色");
                     ui.text_edit_singleline(&mut self.glow_hex);
                 });
-                ui.separator();
-                if ui
-                    .checkbox(&mut self.project.style.inner_shadow.enabled, "内阴影")
-                    .changed()
-                {
-                    self.dirty = true;
-                }
-                if ui
-                    .checkbox(&mut self.project.style.inner_glow.enabled, "内发光")
-                    .changed()
-                {
-                    self.dirty = true;
-                }
-                if ui
-                    .checkbox(&mut self.project.style.color_overlay.enabled, "颜色叠加")
-                    .changed()
-                {
-                    self.dirty = true;
-                }
+                effect_toggle(ui, &mut self.project.style.inner_shadow.enabled, "内阴影", &mut self.dirty);
+                effect_toggle(ui, &mut self.project.style.inner_glow.enabled, "内发光", &mut self.dirty);
+                effect_toggle(ui, &mut self.project.style.color_overlay.enabled, "颜色叠加", &mut self.dirty);
+                effect_toggle(ui, &mut self.project.style.bevel.enabled, "斜面浮雕", &mut self.dirty);
+                effect_toggle(ui, &mut self.project.style.satin.enabled, "光泽", &mut self.dirty);
                 if ui.button("应用样式").clicked() {
                     self.dirty = true;
                 }
                 if ui.button("重置样式").clicked() {
+                    self.push_history();
                     self.project.style = StyleStack::default();
                     self.dirty = true;
                 }
@@ -409,7 +414,7 @@ impl eframe::App for App {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.last_fnt_preview)
                         .font(egui::TextStyle::Monospace)
-                        .desired_rows(10)
+                        .desired_rows(8)
                         .desired_width(f32::INFINITY),
                 );
             });
@@ -447,9 +452,10 @@ impl App {
             .max(ui.available_width())
             + pad * 2.0;
         let h = (lines.len() as f32 * self.line_height + pad * 2.0).max(72.0);
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(w.min(ui.available_width()), h), egui::Sense::hover());
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(w.min(ui.available_width()), h), egui::Sense::hover());
         ui.painter()
-            .rect_filled(rect, 6.0, Color32::from_rgb(20, 24, 31));
+            .rect_filled(rect, 6.0, Color32::from_rgb(12, 16, 22));
         let tw = self.atlas_size.x.max(1.0);
         let th = self.atlas_size.y.max(1.0);
         for (li, line) in lines.iter().enumerate() {
@@ -477,6 +483,150 @@ impl App {
                 }
             }
         }
+    }
+
+    fn open_font(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("字体文件", &["ttf", "otf", "ttc"])
+            .pick_file()
+        {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("font")
+                        .to_string();
+                    self.project.font_bytes = bytes;
+                    self.project.font_name = name;
+                    self.project.font_path = Some(path.clone());
+                    self.font_path = Some(path);
+                    self.dirty = true;
+                }
+                Err(e) => self.status = format!("读取失败：{e}"),
+            }
+        }
+    }
+
+    fn export(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("font.fnt")
+            .add_filter("位图字体", &["fnt"])
+            .save_file()
+        {
+            match generate(&self.project) {
+                Ok(font) => {
+                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("font");
+                    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+                    match write_font_files(&font, dir, stem) {
+                        Ok(_) => {
+                            for sc in &self.project.extra_scales {
+                                if (*sc - 1.0).abs() < 0.01 {
+                                    continue;
+                                }
+                                if let Ok(scaled) = fntforge_core::generate_scaled(&self.project, *sc)
+                                {
+                                    let _ = write_font_files(
+                                        &scaled,
+                                        dir,
+                                        &format!("{stem}@{:.0}x", sc),
+                                    );
+                                }
+                            }
+                            self.status = format!("已导出 {}", path.display());
+                        }
+                        Err(e) => self.status = format!("写出失败：{e}"),
+                    }
+                }
+                Err(e) => self.status = format!("生成失败：{e}"),
+            }
+        }
+    }
+
+    fn save_project(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("font.fntproj")
+            .add_filter("FntForge 工程", &["fntproj", "json"])
+            .save_file()
+        {
+            let pf = ProjectFile::from_project(&self.project);
+            match pf.save(&path) {
+                Ok(_) => self.status = format!("已保存工程 {}", path.display()),
+                Err(e) => self.status = format!("保存失败：{e}"),
+            }
+        }
+    }
+
+    fn open_project(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("FntForge 工程", &["fntproj", "json"])
+            .pick_file()
+        {
+            match ProjectFile::load(&path) {
+                Ok(pf) => {
+                    if let Some(fp) = pf.font_path.as_ref() {
+                        if let Ok(bytes) = std::fs::read(fp) {
+                            self.project.font_bytes = bytes;
+                            self.font_path = Some(PathBuf::from(fp));
+                        }
+                    }
+                    pf.apply_to(&mut self.project);
+                    self.charset_edit = self.project.chars.clone();
+                    self.preview_edit = self.project.preview_text.clone();
+                    self.dirty = true;
+                    self.status = format!("已打开工程 {}", path.display());
+                }
+                Err(e) => self.status = format!("打开工程失败：{e}"),
+            }
+        }
+    }
+
+    fn import_asl(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Photoshop 样式", &["asl", "psd"])
+            .pick_file()
+        {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    self.push_history();
+                    if path.extension().and_then(|s| s.to_str()) == Some("psd") {
+                        match fntforge_import::list_psd_layers(&bytes) {
+                            Ok(layers) => {
+                                self.project.style = fntforge_import::style_from_descriptor_bytes(&bytes);
+                                self.status = format!(
+                                    "已读 PSD，{} 个图层：{}",
+                                    layers.len(),
+                                    layers
+                                        .iter()
+                                        .take(6)
+                                        .map(|l| l.name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(" / ")
+                                );
+                                self.dirty = true;
+                            }
+                            Err(e) => self.status = format!("PSD：{e}"),
+                        }
+                    } else {
+                        match fntforge_import::import_asl(&bytes) {
+                            Ok(style) => {
+                                self.project.style = style;
+                                self.dirty = true;
+                                self.status = format!("已导入 ASL {}", path.display());
+                            }
+                            Err(e) => self.status = format!("ASL：{e}"),
+                        }
+                    }
+                }
+                Err(e) => self.status = format!("读取失败：{e}"),
+            }
+        }
+    }
+}
+
+fn effect_toggle(ui: &mut egui::Ui, on: &mut bool, label: &str, dirty: &mut bool) {
+    if ui.checkbox(on, label).changed() {
+        *dirty = true;
     }
 }
 
@@ -507,14 +657,5 @@ fn apply_fonts(ctx: &egui::Context) {
 }
 
 fn bundled_font() -> Vec<u8> {
-    let candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "testdata/DejaVuSans.ttf",
-    ];
-    for p in candidates {
-        if let Ok(b) = std::fs::read(p) {
-            return b;
-        }
-    }
     include_bytes!("../../../testdata/DejaVuSans.ttf").to_vec()
 }

@@ -6,14 +6,17 @@ mod generate;
 mod pack;
 mod project;
 
-pub use charset::{extract_chars, preset_chars, CharsetPreset};
+pub use charset::{extract_chars, extract_from_source, preset_chars, CharsetPreset};
 pub use fnt::{write_files as write_font_files, write_fnt, BmFont};
-pub use generate::{generate, GeneratedFont, GlyphImage};
+pub use generate::{
+    generate, generate_scaled, lua_snippet, missing_report, GeneratedFont, GlyphImage,
+};
 pub use pack::{pack_glyphs, PackOptions, PackedGlyph, PackedPage};
-pub use project::{AlignH, AlignV, Project};
+pub use project::{AlignH, AlignV, Project, ProjectFile};
 
 pub use fntforge_fx::{
-    Fill, Glow, Overlay, Rgba8, Shadow, Stroke, StrokePosition, StyleStack,
+    Bevel, BlendMode, Contour, Fill, Glow, GradientOverlay, Overlay, Rgba8, Satin, Shadow, Stroke,
+    StrokePosition, StyleStack,
 };
 
 use thiserror::Error;

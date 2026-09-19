@@ -1,6 +1,7 @@
 use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackOptions {
     pub max_size: u32,
     pub padding: u32,
@@ -37,7 +38,7 @@ pub struct PackedPage {
     pub height: u32,
 }
 
-/// Row/shelf packer, no rotation. Overflows to extra pages.
+/// Row/shelf packer, no rotation. Overflows to extra pages. All pages share size.
 pub fn pack_glyphs(sizes: &[(u32, u32)], opt: &PackOptions) -> Result<(Vec<PackedGlyph>, Vec<PackedPage>)> {
     if sizes.is_empty() {
         return Err(Error::Empty);
@@ -65,6 +66,8 @@ pub fn pack_glyphs(sizes: &[(u32, u32)], opt: &PackOptions) -> Result<(Vec<Packe
     ];
     let mut pages = Vec::new();
     let mut i = 0usize;
+    let mut max_pw = 1u32;
+    let mut max_ph = 1u32;
     while i < order.len() {
         let page_id = pages.len() as u32;
         let mut x = 0u32;
@@ -112,10 +115,22 @@ pub fn pack_glyphs(sizes: &[(u32, u32)], opt: &PackOptions) -> Result<(Vec<Packe
             pw = s;
             ph = s;
         }
+        max_pw = max_pw.max(pw);
+        max_ph = max_ph.max(ph);
         pages.push(PackedPage {
             width: pw.max(1),
             height: ph.max(1),
         });
+    }
+    // Cocos common.scaleW/H is one pair for the whole font — keep pages uniform.
+    for p in &mut pages {
+        p.width = max_pw;
+        p.height = max_ph;
+        if opt.square {
+            let s = max_pw.max(max_ph);
+            p.width = s;
+            p.height = s;
+        }
     }
     Ok((glyphs, pages))
 }
@@ -132,5 +147,21 @@ mod tests {
         assert_eq!(g.len(), 3);
         assert!(pages[0].width >= 20);
         assert!(pages[0].height < 200, "should pack in rows not a column");
+    }
+
+    #[test]
+    fn paginates_when_over_max() {
+        let sizes = vec![(80, 80); 8];
+        let opt = PackOptions {
+            max_size: 128,
+            padding: 1,
+            spacing: 2,
+            power_of_two: false,
+            square: false,
+        };
+        let (g, pages) = pack_glyphs(&sizes, &opt).unwrap();
+        assert!(pages.len() >= 2);
+        assert_eq!(g.len(), 8);
+        assert!(pages.iter().all(|p| p.width == pages[0].width));
     }
 }

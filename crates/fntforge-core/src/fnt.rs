@@ -80,6 +80,16 @@ pub fn write_files(font: &GeneratedFont, dir: &Path, stem: &str) -> io::Result<V
         page.save(&p).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         paths.push(p);
     }
+    let miss = crate::generate::missing_report(font);
+    if !miss.is_empty() {
+        let p = dir.join(format!("{stem}_missing.txt"));
+        std::fs::write(&p, miss)?;
+        paths.push(p);
+    }
+    let lua = crate::generate::lua_snippet(stem, "TEXT");
+    let p = dir.join(format!("{stem}_sample.lua"));
+    std::fs::write(&p, lua)?;
+    paths.push(p);
     Ok(paths)
 }
 

@@ -1,173 +1,16 @@
 //! Glyph layer-effect compositor.
 //!
-//! Synthesis order (Photoshop-inspired, bottom to top):
-//! drop shadow → outer glow → fill → inner shadow → inner glow → color overlay → stroke.
+//! Order (Photoshop-inspired, bottom → top):
+//! drop shadow → outer glow → fill → bevel → inner shadow → inner glow
+//! → satin → color/gradient overlay → stroke.
+
+mod sdf;
+mod style;
+
+pub use style::*;
 
 use image::{Rgba, RgbaImage};
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rgba8 {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: u8,
-}
-
-impl Rgba8 {
-    pub const WHITE: Self = Self { r: 255, g: 255, b: 255, a: 255 };
-    pub const BLACK: Self = Self { r: 0, g: 0, b: 0, a: 255 };
-
-    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { r, g, b, a }
-    }
-
-    pub fn from_hex(hex: &str) -> Self {
-        let h = hex.trim().trim_start_matches('#');
-        let parse = |i| u8::from_str_radix(h.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0);
-        if h.len() >= 8 {
-            Self::new(parse(0), parse(2), parse(4), parse(6))
-        } else {
-            Self::new(parse(0), parse(2), parse(4), 255)
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Fill {
-    Solid(Rgba8),
-    Linear {
-        stops: Vec<(f32, Rgba8)>,
-        angle_deg: f32,
-    },
-}
-
-impl Default for Fill {
-    fn default() -> Self {
-        Fill::Solid(Rgba8::WHITE)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StrokePosition {
-    Outer,
-    Center,
-    Inner,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Stroke {
-    pub enabled: bool,
-    pub size: f32,
-    pub position: StrokePosition,
-    pub color: Rgba8,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Shadow {
-    pub enabled: bool,
-    pub color: Rgba8,
-    pub distance: f32,
-    pub angle_deg: f32,
-    pub size: f32,
-    pub spread: f32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Glow {
-    pub enabled: bool,
-    pub color: Rgba8,
-    pub size: f32,
-    pub spread: f32,
-    #[allow(dead_code)]
-    pub from_center: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Overlay {
-    pub enabled: bool,
-    pub color: Rgba8,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StyleStack {
-    pub fill: Fill,
-    pub stroke: Stroke,
-    pub drop_shadow: Shadow,
-    pub inner_shadow: Shadow,
-    pub outer_glow: Glow,
-    pub inner_glow: Glow,
-    pub color_overlay: Overlay,
-}
-
-impl Default for StyleStack {
-    fn default() -> Self {
-        Self {
-            fill: Fill::default(),
-            stroke: Stroke {
-                enabled: false,
-                size: 2.0,
-                position: StrokePosition::Outer,
-                color: Rgba8::BLACK,
-            },
-            drop_shadow: Shadow {
-                enabled: false,
-                color: Rgba8::new(0, 0, 0, 160),
-                distance: 2.0,
-                angle_deg: 120.0,
-                size: 2.0,
-                spread: 0.0,
-            },
-            inner_shadow: Shadow {
-                enabled: false,
-                color: Rgba8::new(0, 0, 0, 140),
-                distance: 1.0,
-                angle_deg: 120.0,
-                size: 2.0,
-                spread: 0.0,
-            },
-            outer_glow: Glow {
-                enabled: false,
-                color: Rgba8::new(255, 200, 80, 180),
-                size: 4.0,
-                spread: 0.0,
-                from_center: false,
-            },
-            inner_glow: Glow {
-                enabled: false,
-                color: Rgba8::new(255, 255, 255, 120),
-                size: 3.0,
-                spread: 0.0,
-                from_center: false,
-            },
-            color_overlay: Overlay {
-                enabled: false,
-                color: Rgba8::new(255, 210, 80, 255),
-            },
-        }
-    }
-}
-
-impl StyleStack {
-    /// Extra pixels needed around a tight glyph bitmap so effects are not clipped.
-    pub fn padding(&self) -> i32 {
-        let mut p = 1.0f32;
-        if self.stroke.enabled {
-            let extra = match self.stroke.position {
-                StrokePosition::Inner => 0.0,
-                StrokePosition::Center => self.stroke.size * 0.5,
-                StrokePosition::Outer => self.stroke.size,
-            };
-            p = p.max(extra + 1.0);
-        }
-        if self.drop_shadow.enabled {
-            p = p.max(self.drop_shadow.distance + self.drop_shadow.size + 2.0);
-        }
-        if self.outer_glow.enabled {
-            p = p.max(self.outer_glow.size + 2.0);
-        }
-        p.ceil() as i32
-    }
-}
+use sdf::{band, max_inside, signed_distance, smoothstep};
 
 /// Render a glyph: `mask` is an 8-bit coverage buffer of size `mw x mh`.
 pub fn render_glyph(mask: &[u8], mw: u32, mh: u32, style: &StyleStack) -> RgbaImage {
@@ -181,16 +24,16 @@ pub fn render_glyph(mask: &[u8], mw: u32, mh: u32, style: &StyleStack) -> RgbaIm
         }
     }
 
+    let sdf = signed_distance(&src, w as usize, h as usize);
     let mut out = RgbaImage::new(w, h);
 
     if style.drop_shadow.enabled {
-        blit_shadow(&mut out, &src, w, h, &style.drop_shadow, false);
+        blit_shadow(&mut out, &src, &sdf, w, h, style, false);
     }
     if style.outer_glow.enabled {
-        blit_glow(&mut out, &src, w, h, &style.outer_glow, false);
+        blit_glow(&mut out, &src, &sdf, w, h, &style.outer_glow, false);
     }
 
-    // Fill
     for y in 0..h {
         for x in 0..w {
             let a = src[(y * w + x) as usize] as f32 / 255.0;
@@ -203,30 +46,49 @@ pub fn render_glyph(mask: &[u8], mw: u32, mh: u32, style: &StyleStack) -> RgbaIm
         }
     }
 
+    if style.bevel.enabled {
+        blit_bevel(&mut out, &src, &sdf, w, h, style);
+    }
     if style.inner_shadow.enabled {
-        blit_shadow(&mut out, &src, w, h, &style.inner_shadow, true);
+        blit_shadow(&mut out, &src, &sdf, w, h, style, true);
     }
     if style.inner_glow.enabled {
-        blit_glow(&mut out, &src, w, h, &style.inner_glow, true);
+        blit_glow(&mut out, &src, &sdf, w, h, &style.inner_glow, true);
     }
-
+    if style.satin.enabled {
+        blit_satin(&mut out, &src, w, h, &style.satin);
+    }
     if style.color_overlay.enabled {
         let ov = style.color_overlay.color;
+        let op = style.color_overlay.opacity;
         for y in 0..h {
             for x in 0..w {
-                let a = src[(y * w + x) as usize] as f32 / 255.0;
+                let a = src[(y * w + x) as usize] as f32 / 255.0 * op * (ov.a as f32 / 255.0);
                 if a <= 0.0 {
                     continue;
                 }
-                let dst = pixel(&out, x, y);
-                let srcp = scale_rgba(ov, a * (ov.a as f32 / 255.0));
-                put(&mut out, x, y, premul_over(dst, srcp));
+                let blended = blend(style.color_overlay.blend, pixel(&out, x, y), ov, a);
+                put(&mut out, x, y, blended);
+            }
+        }
+    }
+    if style.gradient_overlay.enabled && !style.gradient_overlay.stops.is_empty() {
+        let go = &style.gradient_overlay;
+        for y in 0..h {
+            for x in 0..w {
+                let a = src[(y * w + x) as usize] as f32 / 255.0 * go.opacity;
+                if a <= 0.0 {
+                    continue;
+                }
+                let col = lerp_stops(&go.stops, gradient_t(x, y, w, h, go.angle_deg));
+                let blended = blend(go.blend, pixel(&out, x, y), col, a * (col.a as f32 / 255.0));
+                put(&mut out, x, y, blended);
             }
         }
     }
 
     if style.stroke.enabled && style.stroke.size > 0.0 {
-        blit_stroke(&mut out, &src, w, h, &style.stroke);
+        blit_stroke(&mut out, &src, &sdf, w, h, &style.stroke);
     }
 
     out
@@ -234,24 +96,25 @@ pub fn render_glyph(mask: &[u8], mw: u32, mh: u32, style: &StyleStack) -> RgbaIm
 
 fn sample_fill(fill: &Fill, x: u32, y: u32, w: u32, h: u32) -> Rgba8 {
     match fill {
-        Fill::Solid(c) => *c,
+        Fill::Solid { color } => *color,
         Fill::Linear { stops, angle_deg } => {
             if stops.is_empty() {
                 return Rgba8::WHITE;
             }
-            let rad = angle_deg.to_radians();
-            let nx = rad.cos();
-            let ny = rad.sin();
-            let cx = w as f32 * 0.5;
-            let cy = h as f32 * 0.5;
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let proj = dx * nx + dy * ny;
-            let span = (w.max(h) as f32) * 0.5;
-            let t = ((proj / span) * 0.5 + 0.5).clamp(0.0, 1.0);
-            lerp_stops(stops, t)
+            lerp_stops(stops, gradient_t(x, y, w, h, *angle_deg))
         }
     }
+}
+
+fn gradient_t(x: u32, y: u32, w: u32, h: u32, angle_deg: f32) -> f32 {
+    let rad = angle_deg.to_radians();
+    let nx = rad.cos();
+    let ny = -rad.sin();
+    let dx = x as f32 - w as f32 * 0.5;
+    let dy = y as f32 - h as f32 * 0.5;
+    let proj = dx * nx + dy * ny;
+    let span = (w.max(h) as f32) * 0.5;
+    ((proj / span) * 0.5 + 0.5).clamp(0.0, 1.0)
 }
 
 fn lerp_stops(stops: &[(f32, Rgba8)], t: f32) -> Rgba8 {
@@ -263,8 +126,7 @@ fn lerp_stops(stops: &[(f32, Rgba8)], t: f32) -> Rgba8 {
     for w in s.windows(2) {
         if t <= w[1].0 {
             let span = (w[1].0 - w[0].0).max(1e-5);
-            let u = (t - w[0].0) / span;
-            return lerp_color(w[0].1, w[1].1, u);
+            return lerp_color(w[0].1, w[1].1, (t - w[0].0) / span);
         }
     }
     s.last().unwrap().1
@@ -275,180 +137,189 @@ fn lerp_color(a: Rgba8, b: Rgba8, t: f32) -> Rgba8 {
     Rgba8::new(l(a.r, b.r), l(a.g, b.g), l(a.b, b.b), l(a.a, b.a))
 }
 
-fn blit_shadow(out: &mut RgbaImage, src: &[u8], w: u32, h: u32, sh: &Shadow, inner: bool) {
-    let rad = sh.angle_deg.to_radians();
-    // Photoshop 0° is right, increasing counter-clockwise; Y grows down here so sin is flipped.
-    let ox = (rad.cos() * sh.distance).round() as i32;
-    let oy = (-rad.sin() * sh.distance).round() as i32;
-    let mut shifted = vec![0u8; src.len()];
+fn light_angle(style: &StyleStack, local: f32, use_global: bool) -> f32 {
+    if use_global {
+        style.global_light.angle_deg
+    } else {
+        local
+    }
+}
+
+fn blit_shadow(
+    out: &mut RgbaImage,
+    src: &[u8],
+    sdf: &[f32],
+    w: u32,
+    h: u32,
+    style: &StyleStack,
+    inner: bool,
+) {
+    let sh = if inner {
+        &style.inner_shadow
+    } else {
+        &style.drop_shadow
+    };
+    let ang = light_angle(style, sh.angle_deg, sh.use_global_light).to_radians();
+    let ox = (ang.cos() * sh.distance).round() as i32;
+    let oy = (-ang.sin() * sh.distance).round() as i32;
+    let size = sh.size.max(0.5);
     for y in 0..h as i32 {
         for x in 0..w as i32 {
             let sx = x - ox;
             let sy = y - oy;
-            let v = sample_u8(src, w, h, sx, sy);
-            shifted[(y as u32 * w + x as u32) as usize] = v;
-        }
-    }
-    let mut layer = if inner {
-        shifted.iter().map(|v| 255u8.saturating_sub(*v)).collect()
-    } else {
-        shifted
-    };
-    if sh.spread > 0.0 {
-        layer = dilate(&layer, w, h, sh.spread);
-    }
-    let blurred = blur(&layer, w, h, sh.size);
-    for y in 0..h {
-        for x in 0..w {
-            let mut a = blurred[(y * w + x) as usize] as f32 / 255.0;
-            if inner {
-                let m = src[(y * w + x) as usize] as f32 / 255.0;
-                a *= m;
-            }
-            if a <= 0.001 {
+            if sx < 0 || sy < 0 || sx >= w as i32 || sy >= h as i32 {
                 continue;
             }
-            let srcp = scale_rgba(sh.color, a);
-            let dst = pixel(out, x, y);
-            put(out, x, y, premul_over(dst, srcp));
-        }
-    }
-}
-
-fn blit_glow(out: &mut RgbaImage, src: &[u8], w: u32, h: u32, glow: &Glow, inner: bool) {
-    let mut layer = if inner {
-        src.iter().map(|v| 255u8.saturating_sub(*v)).collect()
-    } else {
-        src.to_vec()
-    };
-    if glow.spread > 0.0 {
-        layer = dilate(&layer, w, h, glow.spread);
-    }
-    let blurred = blur(&layer, w, h, glow.size.max(0.5));
-    for y in 0..h {
-        for x in 0..w {
-            let mut a = blurred[(y * w + x) as usize] as f32 / 255.0;
-            if inner {
-                a *= src[(y * w + x) as usize] as f32 / 255.0;
+            let idx = (sy as u32 * w + sx as u32) as usize;
+            let d = sdf[idx];
+            let mut a = if inner {
+                // inside the shifted hole
+                smoothstep(-size, 0.0, d)
             } else {
-                // Keep glow outside the solid glyph so fill stays clean.
-                a *= 1.0 - src[(y * w + x) as usize] as f32 / 255.0;
+                1.0 - smoothstep(0.0, size + sh.spread, d.max(0.0))
+            };
+            if inner {
+                a *= src[(y as u32 * w + x as u32) as usize] as f32 / 255.0;
+            } else {
+                a *= 1.0 - src[(y as u32 * w + x as u32) as usize] as f32 / 255.0;
             }
+            a *= sh.opacity;
             if a <= 0.001 {
                 continue;
             }
-            let srcp = scale_rgba(glow.color, a);
-            let dst = pixel(out, x, y);
-            put(out, x, y, premul_over(dst, srcp));
+            let blended = blend(sh.blend, pixel(out, x as u32, y as u32), sh.color, a * (sh.color.a as f32 / 255.0));
+            put(out, x as u32, y as u32, blended);
         }
     }
 }
 
-fn blit_stroke(out: &mut RgbaImage, src: &[u8], w: u32, h: u32, stroke: &Stroke) {
-    let size = stroke.size.max(0.5);
-    let outer = dilate(src, w, h, size);
-    let inner = erode(src, w, h, size);
-    let half_o = dilate(src, w, h, size * 0.5);
-    let half_i = erode(src, w, h, size * 0.5);
+fn blit_glow(
+    out: &mut RgbaImage,
+    src: &[u8],
+    sdf: &[f32],
+    w: u32,
+    h: u32,
+    glow: &Glow,
+    inner: bool,
+) {
+    let size = glow.size.max(0.5);
     for y in 0..h {
         for x in 0..w {
-            let s = src[(y * w + x) as usize] as f32 / 255.0;
-            let o = outer[(y * w + x) as usize] as f32 / 255.0;
-            let i = inner[(y * w + x) as usize] as f32 / 255.0;
-            let a = match stroke.position {
-                StrokePosition::Outer => (o - s).max(0.0),
-                StrokePosition::Inner => (s - i).max(0.0),
-                StrokePosition::Center => {
-                    let ho = half_o[(y * w + x) as usize] as f32 / 255.0;
-                    let hi = half_i[(y * w + x) as usize] as f32 / 255.0;
-                    (ho - hi).max(0.0)
+            let i = (y * w + x) as usize;
+            let d = sdf[i];
+            let t = if inner {
+                if d >= 0.0 {
+                    0.0
+                } else {
+                    (1.0 - (-d / size).clamp(0.0, 1.0)).clamp(0.0, 1.0)
                 }
+            } else if d <= 0.0 {
+                0.0
+            } else {
+                (1.0 - (d / (size + glow.spread)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
             };
+            let mut a = glow.contour.apply(t);
+            if inner {
+                a *= src[i] as f32 / 255.0;
+            } else {
+                a *= 1.0 - src[i] as f32 / 255.0;
+            }
+            a *= glow.opacity;
             if a <= 0.001 {
                 continue;
             }
-            let srcp = scale_rgba(stroke.color, a);
-            let dst = pixel(out, x, y);
-            put(out, x, y, premul_over(dst, srcp));
+            let blended = blend(glow.blend, pixel(out, x, y), glow.color, a * (glow.color.a as f32 / 255.0));
+            put(out, x, y, blended);
         }
     }
 }
 
-fn dilate(src: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8> {
-    morph(src, w, h, radius, true)
-}
-
-fn erode(src: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8> {
-    morph(src, w, h, radius, false)
-}
-
-fn morph(src: &[u8], w: u32, h: u32, radius: f32, dilate: bool) -> Vec<u8> {
-    let r = radius.ceil() as i32;
-    if r <= 0 {
-        return src.to_vec();
-    }
-    let r2 = radius * radius;
-    let mut out = vec![if dilate { 0 } else { 255 }; src.len()];
-    for y in 0..h as i32 {
-        for x in 0..w as i32 {
-            let mut acc = if dilate { 0u8 } else { 255u8 };
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if (dx * dx + dy * dy) as f32 > r2 {
-                        continue;
-                    }
-                    let v = sample_u8(src, w, h, x + dx, y + dy);
-                    acc = if dilate { acc.max(v) } else { acc.min(v) };
-                }
+fn blit_stroke(out: &mut RgbaImage, src: &[u8], sdf: &[f32], w: u32, h: u32, stroke: &Stroke) {
+    let size = stroke.size.max(0.35);
+    // Never eat a thin glyph (e.g. '+') into a hollow ring.
+    let thick = max_inside(sdf).max(0.6);
+    let inner_size = size.min(thick * 0.85);
+    let cov = match stroke.position {
+        StrokePosition::Outer => band(sdf, 0.0, size),
+        StrokePosition::Inner => band(sdf, -inner_size, 0.0),
+        StrokePosition::Center => {
+            let half = (size * 0.5).min(thick * 0.7);
+            band(sdf, -half, half)
+        }
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            let mut a = cov[i] * stroke.opacity;
+            if stroke.position == StrokePosition::Inner {
+                a *= src[i] as f32 / 255.0;
             }
-            out[(y as u32 * w + x as u32) as usize] = acc;
+            if a <= 0.001 {
+                continue;
+            }
+            let blended = blend(stroke.blend, pixel(out, x, y), stroke.color, a * (stroke.color.a as f32 / 255.0));
+            put(out, x, y, blended);
         }
     }
-    out
 }
 
-/// Separable approximate Gaussian via 3 box blurs.
-fn blur(src: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8> {
-    if radius < 0.4 {
-        return src.to_vec();
+fn blit_bevel(out: &mut RgbaImage, src: &[u8], sdf: &[f32], w: u32, h: u32, style: &StyleStack) {
+    let b = &style.bevel;
+    let ang = style.global_light.angle_deg.to_radians();
+    let alt = style.global_light.altitude_deg.to_radians();
+    let lx = ang.cos() * alt.cos();
+    let ly = -ang.sin() * alt.cos();
+    let lz = alt.sin();
+    let size = b.size.max(0.5);
+    for y in 1..h.saturating_sub(1) {
+        for x in 1..w.saturating_sub(1) {
+            let i = (y * w + x) as usize;
+            let m = src[i] as f32 / 255.0;
+            if m <= 0.0 {
+                continue;
+            }
+            let dx = sdf[i + 1] - sdf[i - 1];
+            let dy = sdf[i + w as usize] - sdf[i - w as usize];
+            let inv = (dx * dx + dy * dy + 1.0).sqrt();
+            let nx = -dx / inv;
+            let ny = -dy / inv;
+            let nz = 1.0 / inv;
+            let ndotl = (nx * lx + ny * ly + nz * lz) * b.depth;
+            let in_band = smoothstep(-size, 0.0, sdf[i]).min(1.0 - smoothstep(-0.2, 0.8, sdf[i].abs()));
+            if ndotl > 0.0 {
+                let a = ndotl.clamp(0.0, 1.0) * b.opacity * m * in_band.max(0.25);
+                let px = premul_over(pixel(out, x, y), scale_rgba(b.highlight, a));
+                put(out, x, y, px);
+            } else {
+                let a = (-ndotl).clamp(0.0, 1.0) * b.opacity * m * in_band.max(0.25);
+                let px = premul_over(pixel(out, x, y), scale_rgba(b.shadow, a));
+                put(out, x, y, px);
+            }
+        }
     }
-    let n = (radius.clamp(0.5, 32.0)).round() as i32;
-    let mut buf = src.to_vec();
-    for _ in 0..3 {
-        buf = box_blur(&buf, w, h, n);
-    }
-    buf
 }
 
-fn box_blur(src: &[u8], w: u32, h: u32, r: i32) -> Vec<u8> {
-    let mut tmp = vec![0u8; src.len()];
-    let mut out = vec![0u8; src.len()];
-    let wr = (r * 2 + 1) as f32;
-    // horizontal
+fn blit_satin(out: &mut RgbaImage, src: &[u8], w: u32, h: u32, satin: &Satin) {
+    let rad = satin.angle_deg.to_radians();
+    let ox = (rad.cos() * satin.distance).round() as i32;
+    let oy = (-rad.sin() * satin.distance).round() as i32;
     for y in 0..h as i32 {
-        let mut sum = 0i32;
-        for x in -r..=r {
-            sum += sample_u8(src, w, h, x, y) as i32;
-        }
         for x in 0..w as i32 {
-            tmp[(y as u32 * w + x as u32) as usize] = (sum as f32 / wr).round() as u8;
-            sum -= sample_u8(src, w, h, x - r, y) as i32;
-            sum += sample_u8(src, w, h, x + r + 1, y) as i32;
+            let a0 = sample_u8(src, w, h, x, y) as f32 / 255.0;
+            if a0 <= 0.0 {
+                continue;
+            }
+            let a1 = sample_u8(src, w, h, x + ox, y + oy) as f32 / 255.0;
+            let a2 = sample_u8(src, w, h, x - ox, y - oy) as f32 / 255.0;
+            let xor = (a1 - a2).abs();
+            let a = xor * a0 * satin.opacity * (satin.color.a as f32 / 255.0);
+            if a <= 0.001 {
+                continue;
+            }
+            let px = premul_over(pixel(out, x as u32, y as u32), scale_rgba(satin.color, a));
+            put(out, x as u32, y as u32, px);
         }
     }
-    // vertical
-    for x in 0..w as i32 {
-        let mut sum = 0i32;
-        for y in -r..=r {
-            sum += sample_u8(&tmp, w, h, x, y) as i32;
-        }
-        for y in 0..h as i32 {
-            out[(y as u32 * w + x as u32) as usize] = (sum as f32 / wr).round() as u8;
-            sum -= sample_u8(&tmp, w, h, x, y - r) as i32;
-            sum += sample_u8(&tmp, w, h, x, y + r + 1) as i32;
-        }
-    }
-    out
 }
 
 fn sample_u8(src: &[u8], w: u32, h: u32, x: i32, y: i32) -> u8 {
@@ -477,7 +348,6 @@ fn scale_rgba(c: Rgba8, a: f32) -> Rgba<u8> {
     ])
 }
 
-/// `src` and `dst` stored as straight-ish premultiplied in RGB, A separate.
 fn premul_over(dst: Rgba<u8>, src: Rgba<u8>) -> Rgba<u8> {
     let sa = src[3] as f32 / 255.0;
     let da = dst[3] as f32 / 255.0;
@@ -491,6 +361,61 @@ fn premul_over(dst: Rgba<u8>, src: Rgba<u8>) -> Rgba<u8> {
         mix(src[1], dst[1]).round().clamp(0.0, 255.0) as u8,
         mix(src[2], dst[2]).round().clamp(0.0, 255.0) as u8,
         (out_a * 255.0).round() as u8,
+    ])
+}
+
+fn blend(mode: BlendMode, dst: Rgba<u8>, src: Rgba8, a: f32) -> Rgba<u8> {
+    let da = dst[3] as f32 / 255.0;
+    if da <= 0.0 {
+        return scale_rgba(src, a);
+    }
+    let dr = dst[0] as f32 / 255.0;
+    let dg = dst[1] as f32 / 255.0;
+    let db = dst[2] as f32 / 255.0;
+    let sr = src.r as f32 / 255.0;
+    let sg = src.g as f32 / 255.0;
+    let sb = src.b as f32 / 255.0;
+    let ch = |d: f32, s: f32| match mode {
+        BlendMode::Normal => s,
+        BlendMode::Multiply => d * s,
+        BlendMode::Screen => 1.0 - (1.0 - d) * (1.0 - s),
+        BlendMode::Overlay => {
+            if d < 0.5 {
+                2.0 * d * s
+            } else {
+                1.0 - 2.0 * (1.0 - d) * (1.0 - s)
+            }
+        }
+        BlendMode::LinearDodge => (d + s).min(1.0),
+        BlendMode::ColorDodge => {
+            if s >= 1.0 {
+                1.0
+            } else {
+                (d / (1.0 - s).max(1e-5)).min(1.0)
+            }
+        }
+        BlendMode::LinearBurn => (d + s - 1.0).max(0.0),
+        BlendMode::ColorBurn => {
+            if s <= 0.0 {
+                0.0
+            } else {
+                (1.0 - (1.0 - d) / s.max(1e-5)).max(0.0)
+            }
+        }
+    };
+    let rr = ch(dr, sr);
+    let gg = ch(dg, sg);
+    let bb = ch(db, sb);
+    let aa = a.clamp(0.0, 1.0);
+    let out_r = rr * aa + dr * (1.0 - aa);
+    let out_g = gg * aa + dg * (1.0 - aa);
+    let out_b = bb * aa + db * (1.0 - aa);
+    let out_a = aa + da * (1.0 - aa);
+    Rgba([
+        (out_r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (out_g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (out_b * 255.0).round().clamp(0.0, 255.0) as u8,
+        (out_a * 255.0).round().clamp(0.0, 255.0) as u8,
     ])
 }
 
@@ -520,5 +445,31 @@ mod tests {
             }
         }
         assert!(any);
+    }
+
+    #[test]
+    fn plus_stroke_keeps_center_filled() {
+        // 11x11 plus: 3px arms. Inner/center stroke must not punch a hole.
+        let mut mask = vec![0u8; 11 * 11];
+        for y in 0..11 {
+            for x in 0..11 {
+                if (x >= 4 && x <= 6) || (y >= 4 && y <= 6) {
+                    mask[y * 11 + x] = 255;
+                }
+            }
+        }
+        let mut style = StyleStack::default();
+        style.fill = Fill::solid(Rgba8::new(232, 196, 74, 255));
+        style.stroke.enabled = true;
+        style.stroke.size = 2.0;
+        style.stroke.position = StrokePosition::Outer;
+        style.stroke.color = Rgba8::new(42, 24, 8, 255);
+        let img = render_glyph(&mask, 11, 11, &style);
+        let pad = style.padding() as u32;
+        let cx = pad + 5;
+        let cy = pad + 5;
+        let p = img.get_pixel(cx, cy);
+        assert!(p[3] > 80, "center of plus must stay filled, got {:?}", p);
+        assert!(p[0] > 80, "center should not be a dark hollow ring, got {:?}", p);
     }
 }
