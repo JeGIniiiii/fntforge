@@ -63,9 +63,27 @@ jobs:
       - name: Stage artifact
         shell: bash
         run: |
+          set -e
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/${{ matrix.bin }}"
-          cp README.md LICENSE dist/
+          BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          case "${{ matrix.artifact }}" in
+            fntforge-windows-x64)
+              cp "$BIN" dist/FntForge.exe
+              cp README.md LICENSE dist/
+              ;;
+            fntforge-macos-arm64|fntforge-macos-x64)
+              mkdir -p dist/FntForge.app/Contents/MacOS
+              cp "$BIN" dist/FntForge.app/Contents/MacOS/FntForge
+              chmod +x dist/FntForge.app/Contents/MacOS/FntForge
+              cp .github/macos/Info.plist dist/FntForge.app/Contents/Info.plist
+              cp README.md LICENSE dist/
+              ;;
+            *)
+              cp "$BIN" dist/FntForge
+              chmod +x dist/FntForge
+              cp README.md LICENSE dist/
+              ;;
+          esac
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

@@ -4,6 +4,7 @@ pub enum CharsetPreset {
     Numbers,
     Latin1,
     CommonPunct,
+    GameHud,
     Custom,
 }
 
@@ -16,6 +17,9 @@ pub fn preset_chars(preset: CharsetPreset) -> String {
             .filter(|c| !c.is_control())
             .collect(),
         CharsetPreset::CommonPunct => " .,!?;:()[]{}<>+-*/=_%$#@&\"'`^~|\\".into(),
+        CharsetPreset::GameHud => {
+            "0123456789+-x/%.,:金币银铜伤害暴击HPMPLv经验生命魔法".into()
+        }
         CharsetPreset::Custom => String::new(),
     }
 }

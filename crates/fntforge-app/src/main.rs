@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fntforge_core::{
@@ -6,7 +8,11 @@ use fntforge_core::{
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "fntforge", version, about = "Bitmap font generator for Cocos2d-x Lua")]
+#[command(
+    name = "fntforge",
+    version,
+    about = "面向 Cocos2d-x Lua 的位图字体生成器"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -14,20 +20,20 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Rasterize a font and write AngelCode .fnt + PNG
+    /// 栅格化字体并写出 AngelCode .fnt + PNG
     Export {
-        /// TrueType / OpenType file
+        /// TrueType / OpenType 文件
         #[arg(long)]
         font: PathBuf,
-        /// Output directory
+        /// 输出目录
         #[arg(long, default_value = ".")]
         out: PathBuf,
-        /// File stem (writes {stem}.fnt and {stem}.png)
+        /// 文件名（写出 {stem}.fnt 和 {stem}.png）
         #[arg(long, default_value = "font")]
         name: String,
         #[arg(long, default_value_t = 48)]
         size: u32,
-        /// Characters to include. Default: printable ASCII
+        /// 要包含的字符。默认：可打印 ASCII
         #[arg(long)]
         chars: Option<String>,
         #[arg(long)]
@@ -82,7 +88,7 @@ fn main() -> Result<()> {
             }
             #[cfg(not(feature = "gui"))]
             {
-                anyhow::bail!("GUI was not compiled. Use `fntforge export --help`.");
+                anyhow::bail!("未编译图形界面。请使用 `fntforge export --help`。");
             }
         }
     }
@@ -102,7 +108,7 @@ fn run_export(
     shadow: bool,
     tabular: bool,
 ) -> Result<()> {
-    let bytes = std::fs::read(&font).with_context(|| format!("read {}", font.display()))?;
+    let bytes = std::fs::read(&font).with_context(|| format!("读取 {}", font.display()))?;
     let face = font
         .file_stem()
         .and_then(|s| s.to_str())
@@ -136,11 +142,11 @@ fn run_export(
     if shadow {
         project.style.drop_shadow.enabled = true;
     }
-    let font = generate(&project).context("generate")?;
-    fntforge_core::write_font_files(&font, &out, &name).context("write")?;
+    let font = generate(&project).context("生成")?;
+    fntforge_core::write_font_files(&font, &out, &name).context("写出")?;
     let desc = write_fnt(&font, &name);
     println!(
-        "Wrote {} glyphs, {} page(s), {} bytes of .fnt → {}",
+        "已写出 {} 个字形、{} 页、{} 字节 .fnt → {}",
         font.glyphs.len(),
         font.pages.len(),
         desc.text.len(),
@@ -151,4 +157,3 @@ fn run_export(
 
 #[cfg(feature = "gui")]
 mod gui;
-

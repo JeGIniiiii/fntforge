@@ -1,14 +1,25 @@
 # FntForge
 
-Open-source bitmap font generator for **Cocos2d-x Lua**.
+面向 **Cocos2d-x Lua** 的开源位图字体生成器。
 
-Build a styled glyph atlas in one window, then export AngelCode BMFont (`.fnt` + PNG) that `cc.Label:createWithBMFont` can load directly.
+在一个窗口里做好描边、投影、发光，然后导出 AngelCode BMFont（`.fnt` + PNG），可直接给 `cc.Label:createWithBMFont` 用。
 
-- Native GUI on Windows and macOS (Linux too)
-- Photoshop-inspired layer styles: fill, stroke, drop shadow, inner shadow, outer/inner glow, color overlay
-- Character-set presets, tabular digits, live atlas + `.fnt` preview
-- CLI for CI / batch export
-- GitHub Actions builds release binaries for Windows x64, macOS arm64, macOS x64, and Linux x64
+- Windows / macOS / Linux 原生 GUI（可双击运行）
+- 类 Photoshop 图层样式：填充、描边、投影、内阴影、外/内发光、颜色叠加
+- 字符集预设、等宽数字、实时图集与 `.fnt` 预览
+- 命令行批量导出
+- GitHub Actions 自动编译：Windows x64、macOS arm64、macOS x64、Linux x64
+
+## 下载可执行程序
+
+到 [Releases](https://github.com/JeGIniiiii/fntforge/releases) 下载对应平台压缩包：
+
+| 平台 | 怎么运行 |
+|---|---|
+| Windows | 解压后双击 `FntForge.exe` |
+| macOS（Apple 芯片） | 解压后打开 `FntForge.app`。若被拦截：系统设置 → 隐私与安全性 → 仍要打开 |
+| macOS（Intel） | 同上，选 `fntforge-macos-x64` |
+| Linux | 运行 `FntForge` |
 
 ## Cocos2d-x Lua
 
@@ -17,18 +28,9 @@ local label = cc.Label:createWithBMFont("fonts/gold.fnt", "金币 +1280", cc.TEX
 self:addChild(label)
 ```
 
-Put `gold.fnt` and `gold.png` in the same folder. The `page file` entry is a bare filename, which is what Cocos expects.
+把 `gold.fnt` 和 `gold.png` 放在同一目录。`page file` 写的是文件名，Cocos 就是这样读的。
 
-## Install
-
-Download a release artifact from GitHub Actions / Releases, or build from source:
-
-```bash
-cargo build --release -p fntforge-app
-./target/release/fntforge
-```
-
-## CLI
+## 命令行
 
 ```bash
 fntforge export \
@@ -42,24 +44,22 @@ fntforge export \
   --name gold
 ```
 
-## GUI
+无参数启动即为图形界面。
 
-Launch with no arguments:
+## 源码结构
+
+```
+crates/fntforge-core   栅格化、度量、装箱、.fnt 写出
+crates/fntforge-fx     图层特效合成
+crates/fntforge-app    egui 图形界面 + clap 命令行
+```
+
+从源码编译：
 
 ```bash
-fntforge
+cargo build --release -p fntforge-app
 ```
 
-Left: font, charset, packing. Center: atlas and `.fnt` text. Right: layer styles. Export writes `.fnt` + PNG next to the path you pick.
+## 许可
 
-## Project layout
-
-```
-crates/fntforge-core   rasterize, metrics, MaxRects pack, .fnt writer
-crates/fntforge-fx     layer-effect compositor
-crates/fntforge-app    egui GUI + clap CLI
-```
-
-## License
-
-MIT. Bundled test font is DejaVu Sans (Bitstream Vera / DejaVu license).
+MIT。测试字体为 DejaVu Sans（Bitstream Vera / DejaVu）。界面中文字体为文泉驿正黑子集。
