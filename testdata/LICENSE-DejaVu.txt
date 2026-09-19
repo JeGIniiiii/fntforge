@@ -1,0 +1,2 @@
+The test/bundled font DejaVuSans.ttf is from the DejaVu fonts project
+(Bitstream Vera / DejaVu licenses). See https://dejavu-fonts.github.io/

@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/fntforge-core", "crates/fntforge-fx", "crates/fntforge-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["FntForge contributors"]
+repository = "https://github.com/JeGIniiiii/fntforge"
+description = "Bitmap font generator for Cocos2d-x Lua with Photoshop-style layer effects"
+readme = "README.md"
+
+[workspace.dependencies]
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+eframe = "0.32"
+egui = "0.32"
+rfd = "0.15"
+rayon = "1.10"

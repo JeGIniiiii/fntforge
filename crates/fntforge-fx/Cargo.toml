@@ -1,0 +1,10 @@
+[package]
+name = "fntforge-fx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Photoshop-style layer-effect compositor for bitmap glyphs"
+
+[dependencies]
+image.workspace = true
+serde.workspace = true
